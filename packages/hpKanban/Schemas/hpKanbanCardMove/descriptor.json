@@ -1,0 +1,14 @@
+﻿{
+  "Descriptor": {
+    "UId": "3b6dfe65-b284-4509-bde3-88d5114cb5bd",
+    "Name": "hpKanbanCardMove",
+    "ModifiedOnUtc": "\/Date(1795356557000)\/",
+    "Parent": {
+      "UId": "1bab9dcf-17d5-49f8-9536-8e0064f1dce0",
+      "Name": "BaseEntity"
+    },
+    "ManagerName": "EntitySchemaManager",
+    "Caption": "Kanban card move",
+    "DependsOn": []
+  }
+}

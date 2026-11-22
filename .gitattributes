@@ -1,0 +1,4 @@
+# Package files must reach Creatio byte-for-byte (BOM, CRLF, "\/Date()\/" in descriptor.json).
+packages/** -text
+*.gz binary
+*.zip binary

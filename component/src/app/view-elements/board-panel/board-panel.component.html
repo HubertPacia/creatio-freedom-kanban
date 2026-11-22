@@ -1,0 +1,281 @@
+@if (isPanelReady()) {
+  <crt-interface-designer-properties-panel-wrapper [showHeader]="true" [headerTitle]="'Kanban board'">
+    <div class="hp-kp">
+      <section class="hp-kp-section">
+        <label class="hp-kp-field">
+          <span class="hp-kp-label">Title</span>
+          <input type="text" [value]="boardTitle()" (change)="onTitle($event)" />
+        </label>
+        <label class="hp-kp-field">
+          <span class="hp-kp-label">Height (e.g. 600px, 70vh)</span>
+          <input type="text" [value]="height()" (change)="onHeight($event)" />
+        </label>
+        <label class="hp-kp-field">
+          <span class="hp-kp-label">Swimlanes</span>
+          <select (change)="onSwimlanes($event)">
+            <option value="none" [selected]="swimlanes() === 'none'">None</option>
+            <option value="owner" [selected]="swimlanes() === 'owner'">By owner</option>
+            <option value="object" [selected]="swimlanes() === 'object'">By object</option>
+          </select>
+        </label>
+        <label class="hp-kp-field">
+          <span class="hp-kp-label">Refresh every (seconds, 0 = off)</span>
+          <input type="number" min="0" max="600" [value]="refreshSeconds()" (change)="onRefresh($event)" />
+        </label>
+      </section>
+
+      <section class="hp-kp-section" aria-labelledby="hpKpFilters">
+        <h3 id="hpKpFilters" class="hp-kp-title">Filters on the board</h3>
+        @for (key of filterKeys; track key) {
+          <label class="hp-kp-check">
+            <input type="checkbox" [checked]="filterToggles()[key]" (change)="onFilterToggle(key, $event)" />
+            {{ filterLabels[key] }}
+          </label>
+        }
+        <p class="hp-kp-hint">A filter switched off is hidden and no longer filters, even if a user had set it.</p>
+      </section>
+
+      <section class="hp-kp-section" aria-labelledby="hpKpStages">
+        <h3 id="hpKpStages" class="hp-kp-title">Stages ({{ stages().length }} of {{ maxStages }})</h3>
+        <p class="hp-kp-hint">Left to right as on the board. Click a stage to set its colour, limit, stale time and rules.</p>
+        <div class="hp-kp-stage-list">
+          @for (stage of stages(); track stage.id; let i = $index; let first = $first; let last = $last) {
+            <div class="hp-kp-stage-card" [class.open]="openStage() === stage.id">
+              <div class="hp-kp-stage-head">
+                <span class="hp-kp-dot" [class.empty]="!stage.color" [style.background]="stage.color ? colors[stage.color] : null"
+                      aria-hidden="true"></span>
+                <input type="text" class="hp-kp-stage-name" [value]="stage.caption" [attr.aria-label]="'Name of stage ' + (i + 1)"
+                       (change)="renameStage(i, $event)" />
+                <button type="button" class="hp-kp-icon" (click)="moveStage(i, -1)" [disabled]="first"
+                        [attr.aria-label]="'Move ' + stage.caption + ' left'" title="Move left">&uarr;</button>
+                <button type="button" class="hp-kp-icon" (click)="moveStage(i, 1)" [disabled]="last"
+                        [attr.aria-label]="'Move ' + stage.caption + ' right'" title="Move right">&darr;</button>
+                <button type="button" class="hp-kp-icon" (click)="removeStage(i)" [disabled]="stages().length <= 1"
+                        [attr.aria-label]="'Remove stage ' + stage.caption" title="Remove stage">&times;</button>
+              </div>
+              <button type="button" class="hp-kp-stage-toggle" (click)="toggleStage(stage.id)"
+                      [attr.aria-expanded]="openStage() === stage.id" [attr.aria-label]="'Settings of ' + stage.caption">
+                <span class="hp-kp-chevron" aria-hidden="true">{{ openStage() === stage.id ? '▾' : '▸' }}</span>
+                {{ stageSummary(stage) || 'No limit, colour or rules' }}
+              </button>
+
+              @if (openStage() === stage.id) {
+                <div class="hp-kp-stage-body">
+                  <div class="hp-kp-field">
+                    <span class="hp-kp-label" [id]="'hpKpColor' + i">Colour</span>
+                    <div class="hp-kp-swatches" role="radiogroup" [attr.aria-labelledby]="'hpKpColor' + i">
+                      <button type="button" class="hp-kp-swatch-btn none" role="radio" [attr.aria-checked]="!stage.color"
+                              (click)="setStageColor(i, '')" aria-label="No colour" title="No colour"></button>
+                      @for (key of colorKeys; track key) {
+                        <button type="button" class="hp-kp-swatch-btn" role="radio" [attr.aria-checked]="stage.color === key"
+                                [style.background]="colors[key]" (click)="setStageColor(i, key)"
+                                [attr.aria-label]="key" [title]="key"></button>
+                      }
+                    </div>
+                  </div>
+
+                  <div class="hp-kp-pair">
+                    <label class="hp-kp-field">
+                      <span class="hp-kp-label">Card limit</span>
+                      <span class="hp-kp-unit">
+                        <input type="number" min="1" max="999" [value]="stage.wipLimit ?? ''" placeholder="no limit"
+                               [attr.aria-label]="'Card limit of ' + stage.caption" (change)="onStageNumber(i, 'wipLimit', $event)" />
+                        <span>cards</span>
+                      </span>
+                    </label>
+                    <label class="hp-kp-field">
+                      <span class="hp-kp-label">Stale after</span>
+                      <span class="hp-kp-unit">
+                        <input type="number" min="1" max="3650" [value]="stage.rotDays ?? ''" placeholder="never"
+                               [attr.aria-label]="'Days before a card in ' + stage.caption + ' is stale'" (change)="onStageNumber(i, 'rotDays', $event)" />
+                        <span>days</span>
+                      </span>
+                    </label>
+                  </div>
+
+                  @if (entities().length) {
+                    <div class="hp-kp-field">
+                      <span class="hp-kp-label">Required before a card may enter this stage</span>
+                      @for (name of entities(); track name) {
+                        <div class="hp-kp-rule">
+                          <span class="hp-kp-rule-object">{{ captionOf(name) }}</span>
+                          <div class="hp-kp-inline">
+                            <span>Required</span>
+                            <div class="hp-kp-chips">
+                              @for (col of requiredOf(stage, name); track col) {
+                                <span class="hp-kp-chip">{{ columnCaption(name, col) }}
+                                  <button type="button" class="hp-kp-chip-x" (click)="removeRequired(i, name, col)"
+                                          [attr.aria-label]="'Do not require ' + columnCaption(name, col)">&times;</button>
+                                </span>
+                              }
+                              @if (requiredOf(stage, name).length < maxRequired) {
+                                <select class="hp-kp-add-required" [attr.aria-label]="'Add a required field of ' + captionOf(name)"
+                                        (change)="addRequired(i, name, $event)">
+                                  <option value="" selected>+ field</option>
+                                  @for (col of columns(name); track col.name) {
+                                    @if (!isRequired(stage, name, col.name)) { <option [value]="col.name">{{ col.caption }}</option> }
+                                  }
+                                </select>
+                              }
+                            </div>
+                          </div>
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          }
+        </div>
+        @if (stageError()) { <div class="hp-kp-error" role="alert">{{ stageError() }}</div> }
+        <button type="button" class="hp-kp-add" (click)="addStage()" [disabled]="stages().length >= maxStages">+ Add stage</button>
+        <p class="hp-kp-hint">Renaming keeps the cards. Cards of a removed stage move to the first stage.</p>
+      </section>
+
+      @if (entities().length) {
+        <section class="hp-kp-section" aria-labelledby="hpKpCards">
+          <h3 id="hpKpCards" class="hp-kp-title">Cards and totals</h3>
+          @for (name of entities(); track name) {
+            <details class="hp-kp-object">
+              <summary>
+                @if (settingsOf(name).color) {
+                  <span class="hp-kp-swatch" [style.background]="colors[settingsOf(name).color]" aria-hidden="true"></span>
+                }
+                {{ captionOf(name) }}
+                <span class="hp-kp-name">{{ settingsOf(name).fields.length }} field(s){{ settingsOf(name).sumField ? ', total' : '' }}</span>
+              </summary>
+              @if (columns(name).length) {
+                <div class="hp-kp-field">
+                  <span class="hp-kp-label">Fields on the card (up to {{ fieldSlots.length }})</span>
+                  @for (slot of fieldSlots; track slot) {
+                    @if (slot <= settingsOf(name).fields.length) {
+                      <select [attr.aria-label]="captionOf(name) + ' card field ' + (slot + 1)" (change)="onField(name, slot, $event)">
+                        <option value="" [selected]="!settingsOf(name).fields[slot]">— none —</option>
+                        @for (col of columns(name); track col.name) {
+                          <option [value]="col.name" [selected]="settingsOf(name).fields[slot] === col.name">{{ col.caption }}</option>
+                        }
+                      </select>
+                    }
+                  }
+                </div>
+                <label class="hp-kp-field">
+                  <span class="hp-kp-label">Total field (summed per stage)</span>
+                  <select (change)="onSumField(name, $event)">
+                    <option value="" [selected]="!settingsOf(name).sumField">— no total —</option>
+                    @for (col of numericColumns(name); track col.name) {
+                      <option [value]="col.name" [selected]="settingsOf(name).sumField === col.name">{{ col.caption }}</option>
+                    }
+                  </select>
+                </label>
+                <div class="hp-kp-sync">
+                  <label class="hp-kp-check">
+                    <input type="checkbox" [checked]="isSyncOn(name)" (change)="onSyncToggle(name, $event)" />
+                    Update a record field when the card changes stage
+                  </label>
+                  @if (isSyncOn(name)) {
+                    <label class="hp-kp-field">
+                      <span class="hp-kp-label">Field to update (a lookup of {{ captionOf(name) }})</span>
+                      <select (change)="onStatusColumn(name, $event)">
+                        <option value="" [selected]="!settingsOf(name).statusColumn" disabled>— choose a field —</option>
+                        @for (col of lookupColumns(name); track col.name) {
+                          <option [value]="col.name" [selected]="settingsOf(name).statusColumn === col.name">{{ col.caption }}</option>
+                        }
+                      </select>
+                    </label>
+                    @if (settingsOf(name).statusColumn) {
+                      @if (statusValuesOf(name); as values) {
+                        @if (values === 'loading') { <p class="hp-kp-hint">Loading values…</p> }
+                        @else if (values === 'error') { <p class="hp-kp-error">The values could not be loaded.</p> }
+                        @else {
+                          <table class="hp-kp-table hp-kp-map">
+                            <caption class="hp-kp-sr">Stage to {{ columnCaption(name, settingsOf(name).statusColumn) }} mapping for {{ captionOf(name) }}</caption>
+                            <thead>
+                              <tr><th scope="col">Stage</th><th scope="col">{{ columnCaption(name, settingsOf(name).statusColumn) }}</th></tr>
+                            </thead>
+                            <tbody>
+                              @for (stage of stages(); track stage.id; let i = $index) {
+                                <tr>
+                                  <th scope="row">
+                                    <span class="hp-kp-dot" [class.empty]="!stage.color" [style.background]="stage.color ? colors[stage.color] : null" aria-hidden="true"></span>
+                                    {{ stage.caption }}
+                                  </th>
+                                  <td>
+                                    <select [attr.aria-label]="columnCaption(name, settingsOf(name).statusColumn) + ' for stage ' + stage.caption"
+                                            (change)="onStageStatus(i, name, $event)">
+                                      <option value="" [selected]="!stage.statusValues?.[name]">— don't change —</option>
+                                      @for (v of values; track v.id) {
+                                        <option [value]="v.id" [selected]="stage.statusValues?.[name] === v.id">{{ v.caption }}</option>
+                                      }
+                                    </select>
+                                  </td>
+                                </tr>
+                              }
+                            </tbody>
+                          </table>
+                          <p class="hp-kp-hint">Moving a card into a stage sets the field on the record. When the field is changed
+                            elsewhere, the card moves to the first stage with that value. "Don't change" leaves the record alone.</p>
+                        }
+                      }
+                    }
+                  }
+                </div>
+                <label class="hp-kp-field">
+                  <span class="hp-kp-label">Card colour</span>
+                  <select (change)="onObjectColor(name, $event)">
+                    <option value="" [selected]="!settingsOf(name).color">No colour</option>
+                    @for (key of colorKeys; track key) {
+                      <option [value]="key" [selected]="settingsOf(name).color === key">{{ key }}</option>
+                    }
+                  </select>
+                </label>
+              } @else {
+                <p class="hp-kp-hint">Loading columns…</p>
+              }
+            </details>
+          }
+          <p class="hp-kp-hint">Totals of different objects are added together: use the same currency or unit.</p>
+        </section>
+      }
+
+      <section class="hp-kp-section" aria-labelledby="hpKpObjects">
+        <h3 id="hpKpObjects" class="hp-kp-title">Allowed objects ({{ entities().length }})</h3>
+        @if (optionsFailed()) {
+          <label class="hp-kp-field">
+            <span class="hp-kp-label">Object names, comma-separated (e.g. Activity, Account)</span>
+            <input type="text" [value]="entities().join(', ')" (change)="onEntitiesText($event)" />
+          </label>
+        } @else {
+          <input type="search" class="hp-kp-search" placeholder="Search objects" aria-label="Search objects"
+                 [value]="entitySearch()" (input)="onEntitySearch($event)" />
+          <div class="hp-kp-table-wrap">
+            <table class="hp-kp-table">
+              <caption class="hp-kp-sr">Objects whose records may be put on this board; allowed ones first</caption>
+              <thead>
+                <tr>
+                  <th scope="col" class="hp-kp-col-check"><span class="hp-kp-sr">Allowed</span></th>
+                  <th scope="col">Object</th>
+                  <th scope="col">Code</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (option of filteredOptions(); track option.name) {
+                  <tr [class.selected]="isSelected(option.name)">
+                    <td class="hp-kp-col-check">
+                      <input type="checkbox" [id]="'hpKpObj_' + option.name" [checked]="isSelected(option.name)"
+                             (change)="toggleEntity(option.name, $event)" />
+                    </td>
+                    <td><label [for]="'hpKpObj_' + option.name">{{ option.caption }}</label></td>
+                    <td class="hp-kp-name" [title]="option.name">{{ option.name }}</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="3" class="hp-kp-hint">{{ options().length ? 'No object matches.' : 'Loading objects…' }}</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+      </section>
+    </div>
+  </crt-interface-designer-properties-panel-wrapper>
+}

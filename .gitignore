@@ -1,0 +1,11 @@
+node_modules/
+.angular/
+component/dist/
+component/out-tsc/
+*.log
+.vs/
+.vscode/
+.idea/
+*.user
+Thumbs.db
+.DS_Store

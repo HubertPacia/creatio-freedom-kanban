@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Resources Culture="en-US">
+	<Group Type="String">
+		<Items>
+			<Item Name="Caption" Value="Kanban card" />
+			<Item Name="Columns.hpBoardCode.Caption" Value="Board code" />
+			<Item Name="Columns.hpEntityName.Caption" Value="Object name" />
+			<Item Name="Columns.hpPosition.Caption" Value="Position" />
+			<Item Name="Columns.hpRecordId.Caption" Value="Record Id" />
+			<Item Name="Columns.hpStageChangedOn.Caption" Value="In stage since" />
+			<Item Name="Columns.hpStageCode.Caption" Value="Stage code" />
+			<Item Name="EventsProcessSchema.Caption" Value="Business process" />
+		</Items>
+	</Group>
+</Resources>
