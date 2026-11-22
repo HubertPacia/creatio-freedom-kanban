@@ -1,0 +1,41 @@
+{
+  "name": "hp_kanban",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "ng": "ng",
+    "build": "ng build",
+    "postbuild": "node -e \"for (const f of ['index.html', 'styles.css']) require('fs').rmSync('../packages/hpKanban/Files/src/js/hp_kanban/' + f, { force: true })\"",
+    "watch": "ng build --watch --configuration development",
+    "test": "node src/app/board-logic.test.ts"
+  },
+  "dependencies": {
+    "@angular-architects/module-federation": "^17.0.8",
+    "@angular/animations": "^17.3.12",
+    "@angular/common": "^17.3.12",
+    "@angular/compiler": "^17.3.12",
+    "@angular/core": "^17.3.12",
+    "@angular/elements": "^17.3.12",
+    "@angular/forms": "^17.3.12",
+    "@angular/platform-browser": "^17.3.12",
+    "@angular/platform-browser-dynamic": "^17.3.12",
+    "@angular/router": "^17.3.12",
+    "@creatio-devkit/common": "0.1000.3",
+    "@creatio/base": "0.1000.3",
+    "@creatio/interface-designer": "0.1000.3",
+    "lodash-es": "^4.18.1",
+    "reflect-metadata": "^0.1.13",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0",
+    "zone.js": "0.14.10"
+  },
+  "devDependencies": {
+    "@angular-devkit/build-angular": "^17.3.15",
+    "@angular/cli": "^17.3.15",
+    "@angular/compiler-cli": "^17.3.12",
+    "@types/node": "^22.14.0",
+    "ngx-build-plus": "^17.0.0",
+    "typescript": "~5.3.3",
+    "webpack": "5.94.0"
+  }
+}

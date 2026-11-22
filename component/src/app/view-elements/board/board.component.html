@@ -1,0 +1,266 @@
+<section class="board" [style.height]="height" [attr.aria-label]="boardTitle || 'Kanban board'">
+  <header class="board-header">
+    <h2 class="board-title">{{ boardTitle || 'Kanban board' }}</h2>
+    @if (configured) {
+      <div class="toolbar" role="search">
+        @if (toggles.search) {
+          <input class="search" type="search" placeholder="Search cards" aria-label="Search cards"
+                 [value]="filter.text" (input)="onSearch($event)" />
+        }
+        @if (toggles.object) {
+          <select aria-label="Object type" (change)="onEntityFilter($event)">
+            <option value="" [selected]="!filter.entityName">All objects</option>
+            @for (info of entityInfos; track info.name) {
+              <option [value]="info.name" [selected]="filter.entityName === info.name">{{ info.caption }}</option>
+            }
+          </select>
+        }
+        @if (toggles.owner) {
+          <select aria-label="Owner" (change)="onOwner($event)">
+            <option value="any" [selected]="ownerChoice === 'any'">All owners</option>
+            <option value="me" [selected]="ownerChoice === 'me'">Owner: me</option>
+            @for (o of owners(); track o.id) {
+              <option [value]="o.id" [selected]="ownerChoice === o.id">{{ o.name }}</option>
+            }
+            @if (unowned()) {
+              <option value="none" [selected]="ownerChoice === 'none'">No owner</option>
+            }
+          </select>
+        }
+        @if (toggles.sort) {
+          <select aria-label="Sort cards" (change)="onSort($event)">
+            <option value="manual" [selected]="sortMode === 'manual'">Manual order</option>
+            <option value="title" [selected]="sortMode === 'title'">Sort: title</option>
+            <option value="total" [selected]="sortMode === 'total'">Sort: total</option>
+            <option value="newest" [selected]="sortMode === 'newest'">Sort: newest added</option>
+          </select>
+        }
+        @if (toggles.stale) {
+          <label class="mine">
+            <input type="checkbox" [checked]="!!filter.staleOnly" (change)="onStaleOnly($event)" />
+            Stale only
+          </label>
+        }
+        @if (filtersActive()) {
+          <button type="button" class="ghost small" (click)="clearFilters()">Clear filters</button>
+        }
+        <button type="button" class="ghost" (click)="reload()" [disabled]="loading" aria-label="Refresh board">&#x21bb;</button>
+        <button type="button" class="primary" (click)="openAdd()" [disabled]="!entityInfos.length">+ Add card</button>
+      </div>
+    }
+  </header>
+
+  @if (configured && sortMode !== 'manual') {
+    <div class="hint">Sorted view: dragging moves cards between stages only. Choose "Manual order" to reorder.</div>
+  }
+
+  @if (error) {
+    <div class="message error" role="alert">
+      {{ error }}
+      @if (errorRecord) { <button type="button" class="ghost small" (click)="openErrorRecord()">Open record</button> }
+      <button type="button" class="ghost small" (click)="dismissError()" aria-label="Dismiss message">&times;</button>
+    </div>
+  }
+
+  @if (!configured) {
+    <div class="message">Open the widget settings in the page designer to finish setup.</div>
+  } @else if (!loading && !entityInfos.length) {
+    <div class="message">No objects are allowed on this board. Choose them in the widget settings.</div>
+  } @else if (!loading && !cardCount) {
+    <div class="message">No cards yet. Use "Add card" to put records on the board.</div>
+  }
+
+  @if (addOpen) {
+    <div class="add-panel" role="dialog" aria-modal="false" aria-labelledby="hpAddTitle">
+      <div class="add-head">
+        <h3 id="hpAddTitle">Add card</h3>
+        <button type="button" class="ghost" (click)="closeAdd()" aria-label="Close">&times;</button>
+      </div>
+      <div class="add-row">
+        <label>Object
+          <select (change)="onAddEntity($event)">
+            @for (info of entityInfos; track info.name) {
+              <option [value]="info.name" [selected]="addEntity === info.name">{{ info.caption }}</option>
+            }
+          </select>
+        </label>
+        <label>Stage
+          <select (change)="onAddStage($event)">
+            @for (stage of stageList; track stage.id) {
+              <option [value]="stage.id" [selected]="addStage === stage.id">{{ stage.caption }}</option>
+            }
+          </select>
+        </label>
+        <label class="grow">Search
+          <input type="search" placeholder="Type at least 2 characters" [value]="addQuery" (input)="onAddQuery($event)" />
+        </label>
+      </div>
+      <div class="add-status" aria-live="polite">
+        @if (addSearching) { Searching… } @else { {{ addMessage }} }
+        @if (!addSearching && !addBulkRunning && newHits() >= 2) {
+          <button type="button" class="ghost small" (click)="addAll()">Add all matching ({{ newHits() }}{{ addHitsCapped ? '+' : '' }})</button>
+        }
+      </div>
+      <ul class="hits">
+        @for (hit of addHits; track hit.id) {
+          <li>
+            <span class="hit-title">{{ hit.title }}</span>
+            @if (hit.onBoard) {
+              <span class="muted">already on board</span>
+            } @else {
+              <button type="button" class="primary small" (click)="addCard(hit)">Add</button>
+            }
+          </li>
+        }
+      </ul>
+    </div>
+  }
+
+  <div class="sr-only" aria-live="polite">{{ wipNotice }}</div>
+
+  <ng-template #headTpl let-stage>
+  <div class="column-head" [style.border-top-color]="stageColor(stage)" [class.colored]="!!stageColor(stage)">
+    <button type="button" class="column-title" aria-expanded="true" (click)="toggleCollapsed(stage.id)"
+            [attr.aria-label]="'Collapse ' + stage.caption" title="Collapse">{{ stage.caption }}</button>
+    <span class="column-stats">
+      @if (columnTotal(stage.id); as total) {
+        <span class="total" [attr.aria-label]="'Total ' + total">&Sigma; {{ total }}</span>
+      }
+      @if (stage.wipLimit) {
+        <span class="count wip" [class.over]="wip(stage) === 'over'" [class.full]="wip(stage) === 'full'"
+              [attr.aria-label]="(columns.get(stage.id)?.length ?? 0) + ' of ' + stage.wipLimit + ' allowed cards'"
+              [title]="'Limit ' + stage.wipLimit">{{ columns.get(stage.id)?.length ?? 0 }} / {{ stage.wipLimit }}</span>
+      } @else {
+        <span class="count" [attr.aria-label]="visible(stage.id).length + ' cards'">{{ visible(stage.id).length }}</span>
+      }
+    </span>
+  </div>
+  </ng-template>
+
+  <ng-template #collapsedTpl let-stage>
+    <button type="button" class="collapse-toggle" aria-expanded="false"
+            [style.border-top-color]="stageColor(stage)" (click)="toggleCollapsed(stage.id)"
+            [attr.aria-label]="'Expand ' + stage.caption + ', ' + visible(stage.id).length + ' cards'">
+      <span class="count">{{ visible(stage.id).length }}</span>
+      <span class="vertical">{{ stage.caption }}</span>
+    </button>
+  </ng-template>
+
+  <ng-template #cardTpl let-card let-stage="stage">
+    <article class="card" role="listitem" draggable="true" [class.dragging]="draggedId === card.id"
+             [class.stale]="card.stale"
+             [style.border-left-color]="cardColor(card)" [class.colored]="!!cardColor(card)"
+             (dragstart)="onDragStart($event, card)" (dragend)="onDragEnd()"
+             (dragover)="onDragOver($event, stage.id)" (drop)="onDrop($event, stage.id, card)">
+      <div class="card-top">
+        <a href="#" class="card-title" (click)="open(card, $event)">{{ card.title }}</a>
+        <button type="button" class="ghost remove" (click)="removeCard(card)"
+                [attr.aria-label]="'Remove ' + card.title + ' from the board'" title="Remove from board">&times;</button>
+      </div>
+      @if (card.values?.length) {
+        <dl class="card-values">
+          @for (v of card.values; track v.label) {
+            <div><dt>{{ v.label }}</dt><dd>{{ v.text }}</dd></div>
+          }
+        </dl>
+      }
+      <div class="card-meta">
+        <span class="chip">{{ entityCaption(card.entityName) }}</span>
+        <span class="age" [title]="'In this stage since ' + (card.stageSince || '?')">{{ age(card) }} in stage</span>
+        @if (card.stale) { <span class="stale-label">stale</span> }
+      </div>
+      <div class="move">
+        <button type="button" class="ghost small history-toggle" (click)="toggleHistory(card)"
+                [attr.aria-expanded]="!!historyOf(card)" [attr.aria-label]="'History of ' + card.title">History</button>
+        <span class="spacer"></span>
+        @if (neighbour(stage.id, -1); as prev) {
+          <button type="button" class="ghost small" (click)="step(card, stage.id, -1)"
+                  [attr.aria-label]="'Move ' + card.title + ' to ' + prev.caption" [title]="'Move to ' + prev.caption">&larr;</button>
+        }
+        @if (neighbour(stage.id, 1); as next) {
+          <button type="button" class="ghost small" (click)="step(card, stage.id, 1)"
+                  [attr.aria-label]="'Move ' + card.title + ' to ' + next.caption" [title]="'Move to ' + next.caption">&rarr;</button>
+        }
+      </div>
+      @if (historyOf(card); as h) {
+        <div class="history" aria-live="polite">
+          @if (h === 'loading') { Loading… }
+          @else if (h === 'error') { History could not be loaded. }
+          @else if (!h.length) { No moves recorded yet. }
+          @else {
+            <table class="history-table">
+              <caption class="sr-only">Moves of {{ card.title }}, newest first</caption>
+              <thead>
+                <tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">From</th><th scope="col">To</th></tr>
+              </thead>
+              <tbody>
+                @for (row of h; track $index) {
+                  <tr>
+                    <td class="when">{{ row.when }}</td>
+                    <td>{{ row.who }}</td>
+                    <td>{{ row.from || '(added)' }}</td>
+                    <td>{{ row.to }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          }
+        </div>
+      }
+    </article>
+  </ng-template>
+
+  @if (swimlaneMode === 'none') {
+  <div class="columns" [class.loading]="loading && !quiet">
+    @for (stage of stageList; track stage.id) {
+      @if (isCollapsed(stage.id)) {
+        <div class="column collapsed" [class.drop]="dropStage === stage.id" [class.wip-over]="wip(stage) === 'over'"
+             (dragover)="onDragOver($event, stage.id)" (drop)="onDrop($event, stage.id)">
+          <ng-container *ngTemplateOutlet="collapsedTpl; context: { $implicit: stage }"></ng-container>
+        </div>
+      } @else {
+      <div class="column" [class.drop]="dropStage === stage.id" [class.wip-over]="wip(stage) === 'over'"
+           (dragover)="onDragOver($event, stage.id)" (drop)="onDrop($event, stage.id)"
+           role="list" [attr.aria-label]="stage.caption">
+        <ng-container *ngTemplateOutlet="headTpl; context: { $implicit: stage }"></ng-container>
+        <div class="column-body">
+          @for (card of visible(stage.id); track card.id) {
+            <ng-container *ngTemplateOutlet="cardTpl; context: { $implicit: card, stage: stage }"></ng-container>
+          }
+        </div>
+      </div>
+      }
+    }
+  </div>
+  } @else {
+  <div class="hint">Lanes by {{ swimlaneMode === 'owner' ? 'owner' : 'object' }}: dragging into another lane changes only the stage.</div>
+  <div class="lanes" [class.loading]="loading && !quiet" [style.grid-template-columns]="gridColumns()">
+    @for (stage of stageList; track stage.id) {
+      <div class="lane-head" [class.collapsed]="isCollapsed(stage.id)" [class.wip-over]="wip(stage) === 'over'">
+        @if (isCollapsed(stage.id)) {
+          <ng-container *ngTemplateOutlet="collapsedTpl; context: { $implicit: stage }"></ng-container>
+        } @else {
+          <ng-container *ngTemplateOutlet="headTpl; context: { $implicit: stage }"></ng-container>
+        }
+      </div>
+    }
+    @for (lane of lanes(); track lane.key) {
+      <div class="lane-title" role="heading" aria-level="3">{{ lane.caption }} <span class="count">{{ lane.count }}</span></div>
+      @for (stage of stageList; track stage.id) {
+        <div class="lane-cell" [class.collapsed]="isCollapsed(stage.id)" [class.drop]="dropStage === stage.id"
+             [class.wip-over]="wip(stage) === 'over'"
+             (dragover)="onDragOver($event, stage.id)" (drop)="onDrop($event, stage.id)"
+             role="list" [attr.aria-label]="lane.caption + ', ' + stage.caption">
+          @if (isCollapsed(stage.id)) {
+            <span class="count">{{ cellCards(stage.id, lane.key).length }}</span>
+          } @else {
+            @for (card of cellCards(stage.id, lane.key); track card.id) {
+              <ng-container *ngTemplateOutlet="cardTpl; context: { $implicit: card, stage: stage }"></ng-container>
+            }
+          }
+        </div>
+      }
+    }
+  </div>
+  }
+</section>

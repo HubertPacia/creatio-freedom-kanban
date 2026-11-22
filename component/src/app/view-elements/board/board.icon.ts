@@ -1,0 +1,2 @@
+/** Toolbox icon of the designer: three columns with cards. Raw SVG markup, currentColor so the theme colours it. */
+export const BOARD_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2.75" y="3.75" width="5" height="16.5" rx="1"/><rect x="9.5" y="3.75" width="5" height="11" rx="1"/><rect x="16.25" y="3.75" width="5" height="7" rx="1"/><path d="M4.25 7h2M4.25 10h2M11 7h2M17.75 7h2"/></svg>`;
