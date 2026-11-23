@@ -6,6 +6,7 @@ import {
 	daysInStage, formatAge, markStale, toLimit, wipState, stageForStatus, reconcileStages, missingRequired, isEmptyValue, lookupId,
 	lanesOf, laneKey, normalizeSwimlanes, normalizeRefresh, parseStoredFilters, hasActiveFilter, NO_OWNER,
 	ownerOptions, hasUnowned, normalizeFilterToggles, applyToggles, formatShortDateTime,
+	autoAddValues, autoAddTargets, cardIdFor, stableId, statusToWrite,
 } from './board-logic.ts';
 import type { Card } from './board-logic.ts';
 
@@ -53,19 +54,24 @@ assert.deepEqual(grouped.get('a')!.map((c) => c.id), ['4', '3']);
 assert.deepEqual(grouped.get('b')!.map((c) => c.id), ['2', '1']);
 assert.equal(groupByStage([card('1', 'a', 0)], []).size, 0);
 
-// moveCard across stages: only changed rows come back
-const cols = groupByStage([card('1', 'a', 0), card('2', 'a', 1), card('3', 'b', 0)], stages);
+// moveCard across stages: only the moved card is written when its neighbours leave room
+const cols = groupByStage([card('1', 'a', 0), card('2', 'a', 1000), card('3', 'b', 0)], stages);
 const changed = moveCard(cols, '1', 'b', 0);
 assert.deepEqual(cols.get('a')!.map((c) => c.id), ['2']);
 assert.deepEqual(cols.get('b')!.map((c) => c.id), ['1', '3']);
-assert.deepEqual(changed.map((c) => c.id).sort(), ['1', '2', '3']);
-assert.equal(cols.get('b')![0].stageCode, 'b');
+assert.deepEqual(changed.map((c) => [c.id, c.stageCode, c.position]), [['1', 'b', -1000]], 'top: one step above');
+assert.deepEqual(moveCard(cols, '2', 'b', 1).map((c) => [c.id, c.position]), [['2', -500]], 'between: the middle');
+assert.deepEqual(moveCard(cols, '1', 'b', 9).map((c) => [c.id, c.position]), [['1', 1000]], 'end: one step below');
+assert.deepEqual(cols.get('b')!.map((c) => c.id), ['2', '3', '1']);
 
-// moveCard within a stage, index clamped
+// no room between neighbours (old rows 0,1,2): the column is renumbered once, index clamped, no-op moves write nothing
 const same = groupByStage([card('1', 'a', 0), card('2', 'a', 1), card('3', 'a', 2)], stages);
-assert.deepEqual(moveCard(same, '3', 'a', 0).map((c) => c.id).sort(), ['1', '2', '3']);
-assert.deepEqual(same.get('a')!.map((c) => c.id), ['3', '1', '2']);
-assert.deepEqual(moveCard(same, '2', 'a', 99).map((c) => c.id), []);
+assert.deepEqual(moveCard(same, '3', 'a', 1).map((c) => [c.id, c.position]), [['3', 1000], ['2', 2000]]);
+assert.deepEqual(same.get('a')!.map((c) => c.id), ['1', '3', '2']);
+assert.deepEqual(moveCard(same, '2', 'a', 99).map((c) => c.id), [], 'already last');
+assert.deepEqual(moveCard(same, '1', 'a', 0).map((c) => c.id), [], 'dropped where it was');
+assert.deepEqual(same.get('a')!.map((c) => c.id), ['1', '3', '2']);
+assert.deepEqual(moveCard(groupByStage([card('1', 'a', 0)], stages), '1', 'b', 0).map((c) => c.position), [0], 'empty column');
 assert.deepEqual(moveCard(same, 'nope', 'a', 0), []);
 assert.deepEqual(moveCard(same, '1', 'nope', 0), []);
 
@@ -75,7 +81,7 @@ assert.deepEqual(moveCard(orphan, '1', 'a', 0).map((c) => c.stageCode), ['a']);
 
 // nextPosition
 assert.equal(nextPosition(undefined), 0);
-assert.equal(nextPosition([card('1', 'a', 4), card('2', 'a', 1)]), 5);
+assert.equal(nextPosition([card('1', 'a', 4), card('2', 'a', 1)]), 1004);
 
 // stage colours: palette keys only
 assert.deepEqual(normalizeStages([{ id: 'a', caption: 'A', color: 'red' }, { id: 'b', caption: 'B', color: 'url(x)' }]),
@@ -194,7 +200,7 @@ const mapped = normalizeStages([
 	{ id: 'c', caption: 'C', statusValues: {}, requiredFields: { Activity: [] } },
 	{ id: 'd', caption: 'D', statusValues: { Activity: DONE }, requiredFields: { Activity: ['DetailedResult'] } },
 ]);
-assert.deepEqual(mapped[0].statusValues, { Activity: NS.toLowerCase() });
+assert.deepEqual(mapped[0].statusValues, { Activity: [NS.toLowerCase()] }, 'one Id (old boards) becomes a list');
 assert.deepEqual(mapped[0].requiredFields, { Activity: ['Result'] });
 assert.equal(mapped[2].statusValues, undefined);
 assert.equal(mapped[2].requiredFields, undefined);
@@ -203,7 +209,24 @@ assert.equal(mapped[2].requiredFields, undefined);
 assert.equal(stageForStatus(mapped, 'Activity', IP.toUpperCase())?.id, 'b');
 assert.equal(stageForStatus(mapped, 'Account', IP), undefined);
 assert.equal(stageForStatus(mapped, 'Activity', null), undefined);
-assert.equal(stageForStatus([...mapped, { id: 'e', caption: 'E', statusValues: { Activity: IP } }], 'Activity', IP)?.id, 'b', 'first wins');
+assert.equal(stageForStatus([...mapped, { id: 'e', caption: 'E', statusValues: { Activity: [IP] } }], 'Activity', IP)?.id, 'b', 'first wins');
+
+// several values per stage: list kept (deduped, GUIDs only); any of them maps; the first is written unless one is there
+const multi = normalizeStages([
+	{ id: 'open', caption: 'Open', statusValues: { Case: [NS, IP, NS.toLowerCase(), 'x'] } },
+	{ id: 'shut', caption: 'Shut', statusValues: { Case: [DONE] } },
+	{ id: 'free', caption: 'Free' },
+]);
+assert.deepEqual(multi[0].statusValues, { Case: [NS.toLowerCase(), IP] });
+assert.equal(stageForStatus(multi, 'Case', IP)?.id, 'open');
+assert.equal(statusToWrite(multi[0], 'Case', DONE), NS.toLowerCase(), 'not one of them: the first');
+assert.equal(statusToWrite(multi[0], 'Case', IP.toUpperCase()), undefined, 'already one of them: unchanged');
+assert.equal(statusToWrite(multi[0], 'Case', undefined), NS.toLowerCase(), 'unknown: the first');
+assert.equal(statusToWrite(multi[2], 'Case', DONE), undefined, "don't change");
+const multiCards = [card('1', 'open', 0, { entityName: 'Case', statusId: IP }), card('2', 'open', 1000, { entityName: 'Case', statusId: DONE })];
+assert.deepEqual(reconcileStages(multiCards, multi).map((m) => [m.card.id, m.card.stageCode]), [['2', 'shut']], 'IP stays in Open, DONE moves');
+const twice = normalizeStages([{ id: 'p', caption: 'P', statusValues: { Case: [IP] } }, { id: 'q', caption: 'Q', statusValues: { Case: [IP, DONE] } }]);
+assert.deepEqual(reconcileStages([card('3', 'q', 0, { entityName: 'Case', statusId: IP })], twice), [], 'its own stage has the value too: stays');
 
 // reconcileStages: record wins, unmapped status stays, placed at the end of the target stage
 const sync = [
@@ -212,9 +235,11 @@ const sync = [
 	card('3', 'd', 0, { statusId: null }),
 	card('4', 'b', 0, { statusId: 'ffffffff-ffff-ffff-ffff-ffffffffffff' }),
 	card('5', 'd', 1, { statusId: IP, entityName: 'Account' }),
+	card('6', 'c', 0, { statusId: DONE }),
 ];
 const moved = reconcileStages(sync, mapped);
-assert.deepEqual(moved.map((m) => [m.card.id, m.fromCode, m.card.stageCode, m.card.position]), [['1', 'a', 'd', 2]]);
+assert.deepEqual(moved.map((m) => [m.card.id, m.fromCode, m.card.stageCode, m.card.position]), [['1', 'a', 'd', 1001]]);
+assert.equal(sync[5].stageCode, 'c', '"don\'t change" stage: left where the user put it');
 assert.equal(sync[1].stageCode, 'a', 'already in its mapped stage');
 assert.equal(sync[2].stageCode, 'd', 'no status: stays');
 assert.equal(sync[3].stageCode, 'b', 'unmapped status: stays');
@@ -294,5 +319,30 @@ assert.equal(formatShortDateTime(new Date(2027, 0, 5, 9, 7)), '05.01.27 09:07');
 assert.equal(formatShortDateTime('2026-11-22T08:05:00'), '22.11.26 08:05');
 assert.equal(formatShortDateTime(new Date('x')), '');
 assert.equal(formatShortDateTime(null), '');
+
+// auto-add: kept only where the stage maps a value; first mapped stage decides; on-board and limit respected
+const auto = normalizeStages([
+	{ id: 'a', caption: 'A', statusValues: { Case: NS }, autoAdd: { Case: true, Activity: true, 'bad name': true } },
+	{ id: 'b', caption: 'B', statusValues: { Case: IP }, autoAdd: { Case: 'yes' } },
+	{ id: 'c', caption: 'C', statusValues: { Case: DONE }, autoAdd: { Case: true } },
+	{ id: 'd', caption: 'D', statusValues: { Case: NS } },
+]);
+assert.deepEqual(auto[0].autoAdd, { Case: true }, 'no mapped value for Activity, bad name dropped');
+assert.equal(auto[1].autoAdd, undefined, 'only true counts');
+assert.deepEqual(autoAddValues(auto, 'Case'), [NS.toLowerCase(), DONE]);
+assert.deepEqual(autoAddValues(auto, 'Activity'), []);
+const onBoardIds = new Set(['r2']);
+assert.deepEqual(autoAddTargets(auto, 'Case', [
+	{ id: 'R1', statusId: NS }, { id: 'R2', statusId: NS }, { id: 'r3', statusId: IP }, { id: 'r4', statusId: DONE.toUpperCase() },
+	{ id: 'r5', statusId: null }, { id: 'r1', statusId: NS }, { id: 'r6', statusId: DONE },
+], onBoardIds, 2), [{ recordId: 'R1', stageCode: 'a' }, { recordId: 'r4', stageCode: 'c' }], 'R2 on board, IP not auto, r1 twice, limit 2');
+
+// cardIdFor: a GUID, stable, case-insensitive on the record, different per board / object / record
+const cid = cardIdFor('board1', 'Case', 'AA-1');
+assert.match(cid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+assert.equal(cardIdFor('board1', 'Case', 'aa-1'), cid);
+assert.equal(new Set([cid, cardIdFor('board2', 'Case', 'aa-1'), cardIdFor('board1', 'Activity', 'aa-1'), cardIdFor('board1', 'Case', 'aa-2')]).size, 4);
+assert.equal(stableId('a', 'b'), stableId('a', 'b'));
+assert.notEqual(stableId('a', 'b'), stableId('a', 'c'));
 
 console.log('board-logic: ok');

@@ -1,5 +1,5 @@
 import {
-	ChangeDetectorRef, Component, EventEmitter, Input, OnChanges, OnDestroy, Output, SimpleChanges, ViewEncapsulation,
+	ChangeDetectorRef, Component, EventEmitter, HostListener, Input, OnChanges, OnDestroy, Output, SimpleChanges, ViewEncapsulation,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
@@ -10,7 +10,8 @@ import {
 	Card, CardFilter, CardValue, COLORS, DEFAULT_STAGES, formatTotal, formatValue, groupByStage, isSortMode, matchesFilter,
 	moveCard, nextPosition, normalizeEntities, normalizeObjectSettings, normalizeStages, ObjectSettings, sortCards, SortMode,
 	Stage, sumCards, toNumber, toSortableDate, VALUE_TYPES, daysInStage, formatAge, markStale, wipState, WipState,
-	lookupId, missingRequired, reconcileStages,
+	lookupId, missingRequired, reconcileStages, autoAddTargets, autoAddValues, cardIdFor, POSITION_STEP, stageForStatus, stableId,
+	statusToWrite,
 	hasActiveFilter, Lane, laneKey, lanesOf, normalizeRefresh, normalizeSwimlanes, parseStoredFilters, StoredFilters,
 	SwimlaneMode, formatShortDateTime, applyToggles, FilterToggles, hasUnowned, normalizeFilterToggles, OwnerChoice, OwnerOption, ownerOptions,
 } from '../../board-logic';
@@ -23,6 +24,30 @@ const HISTORY_LIMIT = 10;
 const MAX_CARDS = 1000;
 const SEARCH_LIMIT = 20;
 const BULK_LIMIT = 100;
+
+/** DataService answers a refused write (rights, business rule, required column, duplicate key) with success: false
+ * instead of an error, and sdk.Model passes that on: turn it into an exception so callers roll back. */
+function saved<T>(result: T): T {
+	const r = result as { success?: boolean; responseStatus?: { Message?: string }; errorInfo?: { message?: string } } | null;
+	if (r?.success === false) {
+		throw new Error(r.responseStatus?.Message || r.errorInfo?.message || 'The change was not saved.');
+	}
+	return result;
+}
+
+/** Runs `fn` over the items, `size` at a time: parallel enough for slow sites, without flooding the server. */
+async function inBatches<T>(items: T[], size: number, fn: (item: T) => Promise<void>): Promise<void> {
+	for (let i = 0; i < items.length; i += size) {
+		await Promise.all(items.slice(i, i + size).map(fn));
+	}
+}
+
+const PARALLEL = 6;
+/** Cards rendered per column (or lane cell) before "Show more". */
+const SHOW_STEP = 50;
+const LOAD_ERROR = 'Cannot load the board.';
+/** shortcut: auto-add creates at most this many cards per load (sequential inserts), the rest come with the next loads. */
+const AUTO_LIMIT = 100;
 
 interface Lookup { value: string; displayValue: string }
 
@@ -157,6 +182,13 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 	addBulkRunning = false;
 	/** The record an error is about (shows an "Open record" button next to the message). */
 	errorRecord: { entityName: string; recordId: string } | null = null;
+	/** Card whose ⋯ menu is open, and where the menu is drawn (fixed: no column can clip it). */
+	menuCardId: string | null = null;
+	menuPos: { top: number; left: number } | null = null;
+	/** In manual order: the card a dragged card would land above (null = end of the column). */
+	dropBeforeId: string | null = null;
+	/** Cards shown per column / lane cell (key `stage` or `stage|lane`); more come with "Show more". */
+	shown = new Map<string, number>();
 
 	private _infos = new Map<string, EntityInfo>();
 	private _onBoard = new Set<string>();
@@ -165,6 +197,9 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 	private _searchTimer?: ReturnType<typeof setTimeout>;
 	private _searchSeq = 0;
 	private _loadSeq = 0;
+	/** Cards whose stage change is still being written: shown in the new stage, locked until the save ends. */
+	private _saving = new Set<string>();
+	private _toastTimer?: ReturnType<typeof setTimeout>;
 	private _refreshTimer?: ReturnType<typeof setInterval>;
 	private _lastLoad = 0;
 	private _restoredFiltersFor: string | null = null;
@@ -177,7 +212,12 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 	private _subscriptions: Array<{ unsubscribe?: () => void }> = [];
 	private _destroyed = false;
 
-	constructor(private _cdr: ChangeDetectorRef) {}
+	/** A fixed menu would float away from its card when anything scrolls: close it instead. */
+	private readonly _onAnyScroll = (): void => this.closeMenu();
+
+	constructor(private _cdr: ChangeDetectorRef) {
+		document.addEventListener('scroll', this._onAnyScroll, true);
+	}
 
 	ngOnChanges(changes: SimpleChanges): void {
 		this._debug('changes', Object.keys(changes), 'stages', JSON.stringify(this.stages)?.slice(0, 80));
@@ -195,6 +235,7 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 		clearTimeout(this._searchTimer);
 		clearInterval(this._refreshTimer);
 		document.removeEventListener('visibilitychange', this._onVisible);
+		document.removeEventListener('scroll', this._onAnyScroll, true);
 		this._subscriptions.forEach((s) => s.unsubscribe?.());
 	}
 
@@ -274,10 +315,15 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 
 	/** A quiet reload, skipped while the user is in the middle of something or the page is hidden. */
 	private async _autoRefresh(): Promise<void> {
-		if (document.visibilityState !== 'visible' || this.loading || this.draggedId || this.addOpen || this.error
-			|| this.addBulkRunning || !this.configured) {
+		if (document.visibilityState !== 'visible' || this.loading || this.draggedId || this.addOpen
+			|| this.addBulkRunning || this._saving.size || !this.configured) {
 			return;
 		}
+		await this._quietReload();
+	}
+
+	/** Reload without dimming the board or closing a message the user has not read yet. */
+	private async _quietReload(): Promise<void> {
 		this.quiet = true;
 		try {
 			await this.reload();
@@ -414,8 +460,10 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 		const seq = ++this._loadSeq;
 		const stageList = normalizeStages(this.stages);
 		this._debug('reload', seq, 'stages', stageList.map((st) => st.caption).join('/'), 'entities', JSON.stringify(this.entities));
-		this.error = '';
-		this.errorRecord = null;
+		if (!this.quiet || this.error === LOAD_ERROR) {
+			this.error = '';
+			this.errorRecord = null;
+		}
 		if (!this.configured) {
 			this.stageList = stageList;
 			this.columns = groupByStage([], stageList);
@@ -436,6 +484,7 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 			const infos = (await Promise.all(allowed.map((name) => this._entityInfo(name))))
 				.filter((info): info is EntityInfo => !!info);
 			const rows = await this._loadCardRows();
+			rows.push(...await this._autoAdd(infos, rows, stageList, settings));
 			const cards: Card[] = [];
 			for (const info of infos) {
 				cards.push(...await this._cardsOf(info, rows.filter((r) => r.hpEntityName === info.name), settings));
@@ -446,7 +495,8 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 			}
 			this._debug('reload', seq, 'applied', infos.length, 'objects', cards.length, 'cards');
 			// The record is the truth: a status changed elsewhere moves its card to the mapped stage.
-			const synced = reconcileStages(cards, stageList);
+			// `since` is read before it is overwritten: every board that sees this change computes the same history Id.
+			const synced = reconcileStages(cards, stageList).map((s) => ({ ...s, since: s.card.stageSince ?? '' }));
 			const now = new Date();
 			synced.forEach(({ card }) => (card.stageSince = now.toISOString()));
 			markStale(cards, stageList, now.getTime());
@@ -465,7 +515,7 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 		} catch (e) {
 			if (seq === this._loadSeq) {
 				console.error('hp-kanban-board: cannot load the board', e);
-				this.error = 'Cannot load the board.';
+				this.error = LOAD_ERROR;
 			}
 		} finally {
 			if (seq === this._loadSeq) {
@@ -502,16 +552,23 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 	onDragEnd(): void {
 		this.draggedId = null;
 		this.dropStage = null;
+		this.dropBeforeId = null;
 		this._render();
 	}
 
-	onDragOver(event: DragEvent, stageId: string): void {
+	/** Over a card (manual order): the line shows above that card; over the empty part of a column: at its end. */
+	onDragOver(event: DragEvent, stageId: string, overCard?: Card): void {
 		if (!this.draggedId) {
 			return;
 		}
 		event.preventDefault();
-		if (this.dropStage !== stageId) {
+		if (overCard) {
+			event.stopPropagation(); // the column's own handler would reset the line to the end
+		}
+		const before = this.sortMode === 'manual' && overCard && overCard.id !== this.draggedId ? overCard.id : null;
+		if (this.dropStage !== stageId || this.dropBeforeId !== before) {
 			this.dropStage = stageId;
+			this.dropBeforeId = before;
 			this._render();
 		}
 	}
@@ -523,6 +580,7 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 		const id = this.draggedId ?? event.dataTransfer?.getData('text/plain') ?? '';
 		this.draggedId = null;
 		this.dropStage = null;
+		this.dropBeforeId = null;
 		if (!id || id === beforeCard?.id) {
 			this._render();
 			return;
@@ -557,78 +615,221 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 		}
 	}
 
-	private async _move(cardId: string, stageId: string, index: number): Promise<void> {
-		const moving = [...this.columns.values()].flat().find((c) => c.id === cardId);
-		const fromCode = moving?.stageCode ?? '';
-		let statusWritten = false;
-		if (moving && fromCode !== stageId) {
-			const blocked = await this._enterStage(moving.entityName, moving.recordId, stageId);
-			if (blocked) {
-				this._showError(blocked, moving);
-				return;
-			}
-			const status = this._statusFor(moving.entityName, stageId);
-			statusWritten = !!status;
-			moving.statusId = status ?? moving.statusId;
+	isSaving(card: Card): boolean {
+		return this._saving.has(card.id);
+	}
+
+	/**
+	 * Why × is not available: auto-add would put the card back on the next load while the record keeps its value.
+	 * '' when the card can be removed.
+	 */
+	autoKept(card: Card): string {
+		const stage = stageForStatus(this.stageList, card.entityName, card.statusId);
+		if (!stage?.autoAdd?.[card.entityName]) {
+			return '';
 		}
+		const column = this.settings[card.entityName]?.statusColumn ?? '';
+		const field = this._infos.get(card.entityName)?.columns.get(column)?.caption ?? column;
+		return `Added automatically: every ${this.entityCaption(card.entityName)} with this ${field} goes to "${stage.caption}". `
+			+ `Change the ${field} or switch off auto-add to take it off the board.`;
+	}
+
+	// ---- card menu ---------------------------------------------------------------------------------------------
+
+	toggleMenu(card: Card, event: Event): void {
+		event.stopPropagation();
+		const toggle = event.currentTarget as HTMLElement;
+		this.menuCardId = this.menuCardId === card.id ? null : card.id;
+		this.menuPos = null;
+		this._render();
+		const menu = toggle.parentElement?.querySelector<HTMLElement>('.menu');
+		if (this.menuCardId && menu) {
+			// Below the ⋯ button, right edges aligned; kept inside the window, above the button when there is no room below.
+			const r = toggle.getBoundingClientRect();
+			const width = menu.offsetWidth;
+			const height = menu.offsetHeight;
+			this.menuPos = {
+				left: Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8)),
+				top: r.bottom + 2 + height > window.innerHeight - 8 ? Math.max(8, r.top - 2 - height) : r.bottom + 2,
+			};
+			this._render();
+			menu.querySelector<HTMLElement>('[role=menuitem]:not([disabled])')?.focus(); // as in any menu
+		}
+	}
+
+	closeMenu(): void {
+		if (this.menuCardId) {
+			this.menuCardId = null;
+			this._render();
+		}
+	}
+
+	/** The scrolling box a card sits in: its column, or the lanes grid. Read before the menu closes. */
+	scrollBoxOf(event: Event): HTMLElement | null {
+		return (event.target as HTMLElement).closest('.column-body, .lanes');
+	}
+
+	scrollToBottom(box: HTMLElement | null): void {
+		box?.scrollTo({ top: box.scrollHeight, behavior: 'smooth' });
+	}
+
+	/** Runs a menu action and closes the menu, focus back on its ⋯ button. */
+	async menuAction(event: Event, action: () => Promise<void> | void): Promise<void> {
+		event.stopPropagation();
+		this._closeMenu(event);
+		await action();
+	}
+
+	/** Arrow keys walk the items, Escape and Tab close the menu. */
+	onMenuKey(event: KeyboardEvent): void {
+		const items = Array.from((event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role=menuitem]:not([disabled])'));
+		const index = items.indexOf(event.target as HTMLElement);
+		if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+			event.preventDefault();
+			items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+		} else if (event.key === 'Escape' || event.key === 'Tab') {
+			this._closeMenu(event);
+		}
+	}
+
+	private _closeMenu(event: Event): void {
+		const toggle = (event.target as HTMLElement).closest('.card-menu')?.querySelector<HTMLElement>('.menu-toggle');
+		this.menuCardId = null;
+		this._render();
+		toggle?.focus();
+	}
+
+	/** A click anywhere else closes the open menu (clicks inside the menu stop before reaching the document). */
+	@HostListener('document:click')
+	onDocumentClick(): void {
+		this.closeMenu();
+	}
+
+	/** The first cards of a list; the rest come with "Show more". */
+	limited(list: Card[], key: string): Card[] {
+		return list.slice(0, this.shown.get(key) ?? SHOW_STEP);
+	}
+
+	hiddenCount(list: Card[], key: string): number {
+		return Math.max(0, list.length - (this.shown.get(key) ?? SHOW_STEP));
+	}
+
+	showMore(key: string): void {
+		this.shown.set(key, (this.shown.get(key) ?? SHOW_STEP) + SHOW_STEP);
+		this._render();
+	}
+
+	/** Manual order: one place up (-1) or down (+1) among the cards shown with it (keyboard alternative to drag). */
+	async shift(card: Card, stageId: string, delta: number): Promise<void> {
+		const list = this._listOf(card, stageId);
+		const neighbour = list[list.indexOf(card) + delta];
+		if (neighbour) {
+			await this._move(card.id, stageId, (this.columns.get(stageId) ?? []).indexOf(neighbour));
+		}
+	}
+
+	private _listOf(card: Card, stageId: string): Card[] {
+		return this.swimlaneMode === 'none' ? this.visible(stageId) : this.cellCards(stageId, laneKey(card, this.swimlaneMode));
+	}
+
+	/**
+	 * The card moves on screen at once; the record (required fields, mapped status) and the card row are written
+	 * afterwards. When any of that fails the card goes back to where it was and the reason is shown.
+	 */
+	private async _move(cardId: string, stageId: string, index: number): Promise<void> {
+		if (this._saving.has(cardId)) {
+			return;
+		}
+		const all = [...this.columns.values()].flat();
+		const moving = all.find((c) => c.id === cardId);
+		const fromCode = moving?.stageCode ?? '';
+		// What a refusal must restore: stage and position before the move (a renumbered column included).
+		const snapshot = new Map(all.map((c) => [c.id, { stageCode: c.stageCode, position: c.position }]));
+		const before = moving && { stageSince: moving.stageSince, stale: moving.stale, statusId: moving.statusId };
 		const changed = moveCard(this.columns, cardId, stageId, index);
 		const stageChanged = !!moving && fromCode !== moving.stageCode;
 		const now = new Date();
 		if (stageChanged) {
 			moving.stageSince = now.toISOString();
 			markStale([moving], this.stageList, now.getTime());
+			this._saving.add(cardId);
 		}
 		this._announceWip(stageId);
 		this._render();
 		if (!changed.length) {
+			this._saving.delete(cardId);
 			return;
 		}
+		let statusWritten = false;
 		try {
+			if (stageChanged) {
+				const blocked = await this._enterStage(moving.entityName, moving.recordId, stageId, moving.statusId);
+				if (blocked) {
+					// Only the cards this move changed: others may have been moved meanwhile.
+					changed.forEach((c) => Object.assign(c, snapshot.get(c.id)));
+					Object.assign(moving, before);
+					this.columns = groupByStage([...this.columns.values()].flat(), this.stageList);
+					this._showError(blocked, moving);
+					return;
+				}
+				const status = this._statusFor(moving.entityName, stageId, moving.statusId);
+				statusWritten = !!status;
+				moving.statusId = status ?? moving.statusId;
+			}
 			const model = await Model.create(CARD_SCHEMA);
-			for (const card of changed) {
+			await inBatches(changed, PARALLEL, async (card) => {
 				const dto: Record<string, unknown> = { hpStageCode: card.stageCode, hpPosition: card.position };
 				if (stageChanged && card === moving) {
 					dto['hpStageChangedOn'] = now; // a reorder inside a stage keeps the age
 				}
-				await model.update(dto as never, [{ type: ModelParameterType.PrimaryColumnValue, value: card.id }]);
-			}
+				saved(await model.update(dto as never, [{ type: ModelParameterType.PrimaryColumnValue, value: card.id }]));
+			});
 			if (stageChanged) {
 				await this._writeHistory(moving, fromCode, moving.stageCode);
 			}
-			if (statusWritten) {
-				await this.reload(); // the record changed: its fields on the card (and totals) are refreshed
-			}
 		} catch (e) {
 			console.error('hp-kanban-board: cannot save the move', e);
+			this._saving.delete(cardId);
 			await this.reload();
-			this.error = 'The card could not be moved. The board was reloaded.';
+			this._showError('The card could not be moved. The board was reloaded.');
+			return;
+		} finally {
+			this._saving.delete(cardId);
 			this._render();
+		}
+		if (statusWritten && !this._saving.size) {
+			await this._quietReload(); // the record changed: its fields on the card (and totals) are refreshed
 		}
 	}
 
 	// ---- record sync / rules ---------------------------------------------------------------------------------
 
-	/** Status value (lookup Id) the stage maps for this object, when the object has a status column. */
-	private _statusFor(entityName: string, stageId: string): string | undefined {
+	/** The value entering the stage writes to the record (none: "don't change", or it already has one of the stage's values). */
+	private _statusFor(entityName: string, stageId: string, current: string | null | undefined): string | undefined {
 		const column = this.settings[entityName]?.statusColumn;
-		return column ? this.stageList.find((s) => s.id === stageId)?.statusValues?.[entityName] : undefined;
+		return column ? statusToWrite(this.stageList.find((s) => s.id === stageId), entityName, current) : undefined;
 	}
 
 	/**
 	 * Everything that must hold before a record's card enters a stage: its required fields are filled, then the mapped
 	 * status is written to the record. Returns the message to show when the card may not enter, or null.
+	 * `current` is the record's value of the status field; undefined = not known yet (Add card): it is read when the
+	 * stage has several values, since a record that already has one of them is left alone.
 	 */
-	private async _enterStage(entityName: string, recordId: string, stageId: string): Promise<string | null> {
+	private async _enterStage(entityName: string, recordId: string, stageId: string,
+		current?: string | null): Promise<string | null> {
 		const stage = this.stageList.find((s) => s.id === stageId);
 		const info = this._infos.get(entityName);
+		const column = this.settings[entityName]?.statusColumn;
 		const required = (stage?.requiredFields?.[entityName] ?? []).filter((f) => info?.columns.has(f));
-		if (stage && required.length) {
+		const readStatus = !!column && current === undefined && (stage?.statusValues?.[entityName]?.length ?? 0) > 1;
+		if (stage && (required.length || readStatus)) {
 			try {
 				const model = await Model.create(entityName);
 				const filters = new FilterGroup();
 				filters.addSchemaColumnFilterWithParameter(ComparisonType.Equal, 'Id', recordId);
 				const rows = await model.load({
-					attributes: ['Id', ...required],
+					attributes: ['Id', ...required, ...(readStatus ? [column!] : [])],
 					parameters: [{ type: ModelParameterType.Filter, value: filters }],
 				} as never) as unknown as Array<Record<string, unknown>>;
 				const missing = missingRequired({ ...stage, requiredFields: { [entityName]: required } }, entityName, rows[0] ?? {});
@@ -636,18 +837,20 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 					const names = missing.map((f) => info?.columns.get(f)?.caption ?? f).join(', ');
 					return `Fill ${names} first: "${stage.caption}" requires it.`;
 				}
+				if (readStatus) {
+					current = lookupId(rows[0]?.[column!]);
+				}
 			} catch (e) {
 				console.error('hp-kanban-board: cannot check the required fields', e);
 				return 'The required fields could not be checked.';
 			}
 		}
-		const status = this._statusFor(entityName, stageId);
-		const column = this.settings[entityName]?.statusColumn;
+		const status = this._statusFor(entityName, stageId, current);
 		if (status && column) {
 			try {
 				const model = await Model.create(entityName);
-				await model.update({ [column]: { value: status, displayValue: '' } } as never,
-					[{ type: ModelParameterType.PrimaryColumnValue, value: recordId }]);
+				saved(await model.update({ [column]: { value: status, displayValue: '' } } as never,
+					[{ type: ModelParameterType.PrimaryColumnValue, value: recordId }]));
 			} catch (e) {
 				console.error('hp-kanban-board: the record rejected the status change', e);
 				const reason = this._errorText(e);
@@ -658,25 +861,32 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 	}
 
 	/** Saves cards moved by the record-wins sync; a failure is logged and fixed by the next load. */
-	private async _saveSynced(synced: Array<{ card: Card; fromCode: string }>, now: Date): Promise<void> {
+	private async _saveSynced(synced: Array<{ card: Card; fromCode: string; since: string }>, now: Date): Promise<void> {
 		if (!synced.length) {
 			return;
 		}
 		try {
 			const model = await Model.create(CARD_SCHEMA);
-			for (const { card, fromCode } of synced) {
-				await model.update({ hpStageCode: card.stageCode, hpPosition: card.position, hpStageChangedOn: now } as never,
-					[{ type: ModelParameterType.PrimaryColumnValue, value: card.id }]);
-				await this._writeHistory(card, fromCode, card.stageCode);
-			}
+			await inBatches(synced, PARALLEL, async ({ card, fromCode, since }) => {
+				saved(await model.update({ hpStageCode: card.stageCode, hpPosition: card.position, hpStageChangedOn: now } as never,
+					[{ type: ModelParameterType.PrimaryColumnValue, value: card.id }]));
+				// Every open board runs this sync. The history Id depends only on the change itself, so exactly one row is
+				// written (and processes listening for card moves start once); the other boards hit the primary key.
+				await this._writeHistory(card, fromCode, card.stageCode, stableId('sync', card.id, fromCode, card.stageCode, since));
+			});
 		} catch (e) {
 			console.error('hp-kanban-board: cannot save the status sync', e);
 		}
 	}
 
+	/** Shown as a toast; one without an "Open record" action goes away by itself after 8 s. */
 	private _showError(message: string, record?: { entityName: string; recordId: string }): void {
 		this.error = message;
 		this.errorRecord = record ? { entityName: record.entityName, recordId: record.recordId } : null;
+		clearTimeout(this._toastTimer);
+		if (!record) {
+			this._toastTimer = setTimeout(() => this.error === message && this.dismissError(), 8000);
+		}
 		this._render();
 	}
 
@@ -740,11 +950,13 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 	}
 
 	/** One history row per stage change (or add). A failure is logged and never undoes the move. */
-	private async _writeHistory(card: { entityName: string; recordId: string }, fromCode: string, toCode: string): Promise<void> {
+	private async _writeHistory(card: { entityName: string; recordId: string }, fromCode: string, toCode: string,
+		id?: string): Promise<void> {
 		const caption = (code: string) => this.stageList.find((s) => s.id === code)?.caption ?? code;
 		try {
 			const model = await Model.create(MOVE_SCHEMA);
-			await model.insert({
+			saved(await model.insert({
+				...(id ? { Id: id } : {}),
 				hpBoardCode: this.boardCode,
 				hpEntityName: card.entityName,
 				hpRecordId: card.recordId,
@@ -752,9 +964,13 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 				hpToStageCode: toCode,
 				hpFromStageCaption: fromCode ? caption(fromCode) : '',
 				hpToStageCaption: caption(toCode),
-			});
+			}));
 		} catch (e) {
-			console.error('hp-kanban-board: cannot write the move history', e);
+			if (id) {
+				this._debug('history row already written by another board', id); // expected, see _saveSynced
+			} else {
+				console.error('hp-kanban-board: cannot write the move history', e);
+			}
 		}
 	}
 
@@ -781,16 +997,19 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 	// ---- remove / open -------------------------------------------------------------------------------------
 
 	async removeCard(card: Card): Promise<void> {
+		if (this.autoKept(card) || this._saving.has(card.id)) {
+			return;
+		}
 		try {
 			const model = await Model.create(CARD_SCHEMA);
-			await model.delete([{ type: ModelParameterType.PrimaryColumnValue, value: card.id }]);
+			saved(await model.delete([{ type: ModelParameterType.PrimaryColumnValue, value: card.id }]));
 			const column = this.columns.get(card.stageCode) ?? [...this.columns.values()].find((c) => c.includes(card));
 			column?.splice(column.indexOf(card), 1);
 			this._onBoard.delete(this._key(card.entityName, card.recordId));
 			this.cardCount--;
 		} catch (e) {
 			console.error('hp-kanban-board: cannot remove the card', e);
-			this.error = 'The card could not be removed.';
+			this._showError('The card could not be removed.');
 		}
 		this._render();
 	}
@@ -810,17 +1029,17 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 			} as never);
 		} catch (e) {
 			console.error('hp-kanban-board: cannot open the record', e);
-			this.error = 'The record could not be opened.';
-			this._render();
+			this._showError('The record could not be opened.');
 		}
 	}
 
 	// ---- add -----------------------------------------------------------------------------------------------
 
-	openAdd(): void {
+	/** From the toolbar (first stage) or a column's "+" (that stage). */
+	openAdd(stageId?: string): void {
 		this.addOpen = true;
 		this.addEntity = this.entityInfos[0]?.name ?? '';
-		this.addStage = this.stageList[0]?.id ?? '';
+		this.addStage = stageId ?? this.stageList[0]?.id ?? '';
 		this.addQuery = '';
 		this.addHits = [];
 		this.addMessage = '';
@@ -850,8 +1069,6 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 		if (hit.onBoard || !this.addEntity || !this.addStage) {
 			return;
 		}
-		// shortcut: the duplicate check uses the cards loaded with the board; two users adding the same record at
-		// the same moment can both succeed. A unique index (board, object, record) would close that.
 		if (this._onBoard.has(this._key(this.addEntity, hit.id))) {
 			hit.onBoard = true;
 			this._render();
@@ -864,19 +1081,18 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 			return;
 		}
 		try {
-			const model = await Model.create(CARD_SCHEMA);
-			await model.insert({
-				hpBoardCode: this.boardCode,
-				hpStageCode: this.addStage,
-				hpEntityName: this.addEntity,
-				hpRecordId: hit.id,
-				hpPosition: nextPosition(this.columns.get(this.addStage)),
-				hpStageChangedOn: new Date(),
-			} as never);
-			await this._writeHistory({ entityName: this.addEntity, recordId: hit.id }, '', this.addStage);
+			const row = await this._insertCard(this.addEntity, hit.id, this.addStage, nextPosition(this.columns.get(this.addStage)));
 			hit.onBoard = true;
 			this.addMessage = `Added "${hit.title}".`;
-			await this.reload();
+			// Only the new card is read, not the whole board.
+			const info = this._infos.get(this.addEntity);
+			const [card] = info ? await this._cardsOf(info, [row], this.settings) : [];
+			if (card && !this.columns.get(card.stageCode)?.some((c) => c.id === card.id)) {
+				markStale([card], this.stageList, Date.now());
+				this.columns.get(card.stageCode)?.push(card);
+				this.cardCount++;
+			}
+			this._render();
 		} catch (e) {
 			console.error('hp-kanban-board: cannot add the card', e);
 			this.addMessage = 'The card could not be added.';
@@ -963,31 +1179,24 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 		let firstRefusal = '';
 		try {
 			const hits = await this._findRecords(info, this.addQuery.trim(), BULK_LIMIT);
-			const model = await Model.create(CARD_SCHEMA);
+			const fresh = hits.filter((hit) => !this._onBoard.has(this._key(info.name, hit.id)));
+			skipped = hits.length - fresh.length;
 			let position = nextPosition(this.columns.get(this.addStage));
-			for (const hit of hits) {
-				if (this._onBoard.has(this._key(info.name, hit.id))) {
-					skipped++;
-					continue;
-				}
-				const blocked = await this._enterStage(info.name, hit.id, this.addStage);
+			const stage = this.addStage;
+			await inBatches(fresh.map((hit) => ({ hit, position: (position += POSITION_STEP) })), PARALLEL, async ({ hit, position }) => {
+				const blocked = await this._enterStage(info.name, hit.id, stage);
 				if (blocked) {
 					refused++;
 					firstRefusal ||= `${hit.title}: ${blocked}`;
-					continue;
+					return;
 				}
-				await model.insert({
-					hpBoardCode: this.boardCode,
-					hpStageCode: this.addStage,
-					hpEntityName: info.name,
-					hpRecordId: hit.id,
-					hpPosition: position++,
-					hpStageChangedOn: new Date(),
-				} as never);
-				await this._writeHistory({ entityName: info.name, recordId: hit.id }, '', this.addStage);
-				this._onBoard.add(this._key(info.name, hit.id));
-				added++;
-			}
+				try {
+					await this._insertCard(info.name, hit.id, stage, position);
+					added++;
+				} catch {
+					skipped++; // the same card Id: someone else added it a moment ago
+				}
+			});
 		} catch (e) {
 			console.error('hp-kanban-board: bulk add stopped', e);
 			firstRefusal ||= 'The rest could not be added.';
@@ -1025,6 +1234,72 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 			console.warn(`hp-kanban-board: object "${name}" is not available and is skipped`, e);
 			return null;
 		}
+	}
+
+	/**
+	 * One card row plus its history row. The Id comes from board + object + record, so the same record added twice at
+	 * the same moment (two users, auto-add) fails on the primary key instead of making a second card.
+	 */
+	private async _insertCard(entityName: string, recordId: string, stageCode: string, position: number): Promise<CardRow> {
+		const now = new Date();
+		const row: CardRow = {
+			Id: cardIdFor(this.boardCode, entityName, recordId), hpStageCode: stageCode, hpEntityName: entityName,
+			hpRecordId: recordId, hpPosition: position, hpStageChangedOn: now, CreatedOn: now,
+		};
+		const model = await Model.create(CARD_SCHEMA);
+		const { CreatedOn: _, ...dto } = { ...row, hpBoardCode: this.boardCode }; // CreatedOn is set by the platform
+		saved(await model.insert(dto as never));
+		this._onBoard.add(this._key(entityName, recordId));
+		await this._writeHistory({ entityName, recordId }, '', stageCode);
+		return row;
+	}
+
+	/**
+	 * Records whose mapped field value has "auto-add" on its stage get a card there. The card Id is derived from the
+	 * record, so a second viewer adding the same record at the same moment fails on the key and skips it.
+	 * Required fields do not apply: the record is the truth, as for the status sync. A failure never stops the load.
+	 */
+	private async _autoAdd(infos: EntityInfo[], rows: CardRow[], stages: Stage[],
+		settings: Record<string, ObjectSettings>): Promise<CardRow[]> {
+		const added: CardRow[] = [];
+		for (const info of infos) {
+			const column = settings[info.name]?.statusColumn;
+			const values = autoAddValues(stages, info.name);
+			if (!column || !values.length || info.columns.get(column)?.dataValueType !== VALUE_TYPES.lookup
+				|| rows.length + added.length >= MAX_CARDS) {
+				continue;
+			}
+			try {
+				const filters = new FilterGroup();
+				filters.addSchemaColumnInFilterWithParameters(ComparisonType.Equal, column, values);
+				const records = await (await Model.create(info.name)).load({
+					attributes: ['Id', column],
+					parameters: [{ type: ModelParameterType.Filter, value: filters }],
+					options: { pagingConfig: { rowCount: MAX_CARDS, rowsOffset: 0 } },
+				} as never) as unknown as Array<Record<string, unknown>>;
+				const onBoard = new Set(rows.filter((r) => r.hpEntityName === info.name).map((r) => String(r.hpRecordId).toLowerCase()));
+				const targets = autoAddTargets(stages, info.name,
+					records.map((r) => ({ id: String(r['Id']), statusId: lookupId(r[column]) })), onBoard,
+					Math.min(AUTO_LIMIT - added.length, MAX_CARDS - rows.length - added.length));
+				const next = new Map<string, number>();
+				const planned = targets.map((t) => {
+					const position = next.get(t.stageCode) ?? nextPosition([...rows, ...added]
+						.filter((r) => r.hpStageCode === t.stageCode).map((r) => ({ position: r.hpPosition ?? 0 })));
+					next.set(t.stageCode, position + POSITION_STEP);
+					return { ...t, position };
+				});
+				await inBatches(planned, PARALLEL, async (t) => {
+					try {
+						added.push(await this._insertCard(info.name, t.recordId, t.stageCode, t.position));
+					} catch (e) {
+						console.warn('hp-kanban-board: auto-add skipped (added by someone else, or no rights)', t.recordId, e);
+					}
+				});
+			} catch (e) {
+				console.error(`hp-kanban-board: auto-add for "${info.name}" stopped`, e);
+			}
+		}
+		return added;
 	}
 
 	private async _loadCardRows(): Promise<CardRow[]> {

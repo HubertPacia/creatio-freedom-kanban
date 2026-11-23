@@ -5,7 +5,7 @@ import { CommonModule } from '@angular/common';
 import { ComparisonType, CrtInput, CrtViewElement, FilterGroup, Model, ModelParameterType } from '@creatio-devkit/common';
 import { PropertyPanel, ViewNodeEditor, ViewNodePropertyValueType } from '@creatio/interface-designer';
 import {
-	COLORS, MAX_CARD_FIELDS, MAX_REQUIRED_FIELDS, MAX_STAGES, newStageId, toLimit, normalizeRefresh, normalizeSwimlanes,
+	COLORS, MAX_CARD_FIELDS, MAX_REQUIRED_FIELDS, MAX_STAGES, MAX_STATUS_VALUES, newStageId, toLimit, normalizeRefresh, normalizeSwimlanes,
 	SwimlaneMode, normalizeEntities, normalizeObjectSettings, normalizeStages,
 	ObjectSettings, Stage, VALUE_TYPES, FILTER_KEYS, FilterToggles, normalizeFilterToggles,
 } from '../../board-logic';
@@ -29,6 +29,8 @@ interface LookupOption {
 }
 
 const LOOKUP_LIMIT = 200;
+/** Auto-add counts stop here: the board loads at most 1000 cards anyway. */
+const COUNT_LIMIT = 1000;
 
 /**
  * Properties panel of hp.KanbanBoard in the Freedom UI designer. Every change is written at once as a constant of the
@@ -58,6 +60,8 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 	protected readonly columnsOf = signal<Record<string, ColumnOption[]>>({});
 	/** Values of each object's status column, keyed by object name. */
 	protected readonly statusOptions = signal<Record<string, LookupOption[] | 'loading' | 'error'>>({});
+	/** Records per "object|value" (counted up to COUNT_LIMIT), shown next to the Auto-add tick. */
+	protected readonly valueCounts = signal<Record<string, number | 'loading' | 'error'>>({});
 	readonly maxRequired = MAX_REQUIRED_FIELDS;
 	protected readonly isPanelReady = signal(false);
 	protected readonly boardTitle = signal('');
@@ -69,7 +73,7 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 	protected readonly filterToggles = signal<FilterToggles>(normalizeFilterToggles(undefined));
 	readonly filterKeys = FILTER_KEYS;
 	readonly filterLabels: Record<keyof FilterToggles, string> = {
-		search: 'Search box', object: 'Object type', owner: 'Owner', stale: '"Stale only"', sort: 'Sort order',
+		search: 'Search box', object: 'Object type', owner: 'Owner', stale: 'Stale only', sort: 'Sort order',
 	};
 	protected readonly options = signal<EntityOption[]>([]);
 	protected readonly optionsFailed = signal(false);
@@ -77,6 +81,12 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 	protected readonly stageError = signal('');
 	/** Objects whose "update a record field" box is ticked before a field is chosen. */
 	protected readonly syncOpen = signal<Record<string, boolean>>({});
+	/** Objects expanded under "Cards and totals": kept here so a redraw after a save does not fold them. */
+	protected readonly openObjects = signal<Record<string, boolean>>({});
+
+	onObjectToggle(name: string, event: Event): void {
+		this.openObjects.set({ ...this.openObjects(), [name]: (event.target as HTMLDetailsElement).open });
+	}
 	/** The stage whose settings are open (one at a time). */
 	protected readonly openStage = signal<string | null>(null);
 	protected readonly filteredOptions = computed(() => {
@@ -423,16 +433,49 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 			await this._loadStatusOptions(name);
 		}
 		// Values of the previous column mean nothing for the new one.
-		await this._saveStages(this.stages().map((s) => this._withStageMap(s, 'statusValues', name, undefined)));
+		await this._saveStages(this.stages().map((s) =>
+			this._withStageMap(this._withStageMap(s, 'statusValues', name, undefined), 'autoAdd', name, undefined)));
 	}
 
-	async onStageStatus(index: number, name: string, event: Event): Promise<void> {
-		const value = (event.target as HTMLSelectElement).value || undefined;
-		await this._saveStages(this.stages().map((s, i) => (i === index ? this._withStageMap(s, 'statusValues', name, value) : s)));
+	/** Values this stage stands for (several allowed); empty = "don't change". */
+	valuesOf(stage: Stage, name: string): string[] {
+		return stage.statusValues?.[name] ?? [];
+	}
+
+	valueCaption(name: string, id: string): string {
+		const options = this.statusOptions()[name];
+		return (Array.isArray(options) ? options.find((o) => o.id === id)?.caption : undefined) ?? id;
+	}
+
+	async addStageValue(index: number, name: string, event: Event): Promise<void> {
+		const select = event.target as HTMLSelectElement;
+		const value = select.value;
+		select.value = '';
+		const stage = this.stages()[index];
+		if (!value || !stage || this.valuesOf(stage, name).includes(value)) {
+			return;
+		}
+		void this._loadCount(name, value);
+		const list = [...this.valuesOf(stage, name), value].slice(0, MAX_STATUS_VALUES);
+		await this._saveStages(this.stages().map((s, i) => (i === index ? this._withStageMap(s, 'statusValues', name, list) : s)));
+	}
+
+	/** The last value removed means "don't change", which also switches auto-add off for the stage. */
+	async removeStageValue(index: number, name: string, value: string): Promise<void> {
+		const stage = this.stages()[index];
+		const list = this.valuesOf(stage, name).filter((v) => v !== value);
+		await this._saveStages(this.stages().map((s, i) => (i !== index ? s
+			: this._withStageMap(this._withStageMap(s, 'statusValues', name, list.length ? list : undefined), 'autoAdd', name,
+				list.length ? s.autoAdd?.[name] : undefined))));
+	}
+
+	async onStageAutoAdd(index: number, name: string, event: Event): Promise<void> {
+		const on = (event.target as HTMLInputElement).checked || undefined;
+		await this._saveStages(this.stages().map((s, i) => (i === index ? this._withStageMap(s, 'autoAdd', name, on) : s)));
 	}
 
 	/** A copy of the stage with one object's entry of statusValues / requiredFields set or removed. */
-	private _withStageMap<K extends 'statusValues' | 'requiredFields'>(stage: Stage, key: K, name: string,
+	private _withStageMap<K extends 'statusValues' | 'requiredFields' | 'autoAdd'>(stage: Stage, key: K, name: string,
 		value: NonNullable<Stage[K]>[string] | undefined): Stage {
 		const map = { ...(stage[key] ?? {}) } as Record<string, unknown>;
 		if (value === undefined) {
@@ -465,11 +508,56 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 				.map((r) => ({ id: String(r['Id']).toLowerCase(), caption: String(r[display] ?? r['Id']) }))
 				.sort((a, b) => a.caption.localeCompare(b.caption));
 			this.statusOptions.set({ ...this.statusOptions(), [name]: list });
+			const values = new Set(this.stages().flatMap((s) => s.statusValues?.[name] ?? []));
+			values.forEach((v) => void this._loadCount(name, v));
 		} catch (e) {
 			console.warn(`hp-kanban-board-panel: values of ${name}.${column.name} unavailable`, e);
 			this.statusOptions.set({ ...this.statusOptions(), [name]: 'error' });
 		}
 		this._render();
+	}
+
+	/** "75", "1000+", "…" - how many records auto-add would put into the stage. */
+	/** Records having any of the values (each counted up to COUNT_LIMIT). */
+	countText(name: string, valueIds: string[]): string {
+		const counts = valueIds.map((id) => this.valueCounts()[`${name}|${id}`]);
+		if (counts.some((c) => c === 'error')) {
+			return '?';
+		}
+		if (counts.some((c) => typeof c !== 'number')) {
+			return '…';
+		}
+		const sum = (counts as number[]).reduce((a, b) => a + b, 0);
+		return counts.some((c) => (c as number) >= COUNT_LIMIT) ? `${sum}+` : String(sum);
+	}
+
+	private async _loadCount(name: string, valueId: string): Promise<void> {
+		const key = `${name}|${valueId}`;
+		const column = this.settingsOf(name).statusColumn;
+		if (!column || this.valueCounts()[key] !== undefined) {
+			return;
+		}
+		this.valueCounts.set({ ...this.valueCounts(), [key]: 'loading' });
+		try {
+			const filters = new FilterGroup();
+			filters.addSchemaColumnFilterWithParameter(ComparisonType.Equal, column, valueId);
+			const rows = await (await Model.create(name)).load({
+				attributes: ['Id'],
+				parameters: [{ type: ModelParameterType.Filter, value: filters }],
+				options: { pagingConfig: { rowCount: COUNT_LIMIT, rowsOffset: 0 } },
+			} as never) as unknown as unknown[];
+			this.valueCounts.set({ ...this.valueCounts(), [key]: rows.length });
+		} catch (e) {
+			console.warn(`hp-kanban-board-panel: cannot count ${name} records`, e);
+			this.valueCounts.set({ ...this.valueCounts(), [key]: 'error' });
+		}
+		this._render();
+	}
+
+	/** Caption of an earlier stage that maps the same value: record sync and auto-add use that one. */
+	duplicateOf(index: number, name: string): string {
+		const values = this.stages()[index]?.statusValues?.[name] ?? [];
+		return this.stages().slice(0, index).find((s) => s.statusValues?.[name]?.some((v) => values.includes(v)))?.caption ?? '';
 	}
 
 	async onObjectColor(name: string, event: Event): Promise<void> {

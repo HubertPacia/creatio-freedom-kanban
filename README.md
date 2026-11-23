@@ -11,8 +11,10 @@ Kanban board widget for **Creatio Freedom UI**. Drop it onto any page from the p
 | Any object | Choose which objects' records may be put on a board (Activity, Account, Contact, Case, custom objects…) |
 | Cards | Up to 4 fields per object shown on the cards (dates, lookups, numbers, text), a colour per object |
 | Column totals | Sum of a numeric field per stage (e.g. Amount), filters respected |
-| Drag and drop | Move cards between stages and reorder them; ← / → buttons for keyboard users |
-| Record sync (optional) | Map each stage to a lookup value (e.g. Activity → Status). Moving a card updates the record; a record changed elsewhere moves its card |
+| Drag and drop | Move cards between stages and reorder them, with a line showing where the card lands. A card moves at once and is saved in the background; if the save is refused it goes back and an error message says why |
+| Card menu | ⋯ on every card: move to the previous / next stage, move up / down, scroll to bottom, history (keyboard friendly) |
+| Record sync (optional) | Map each stage to one or more lookup values (e.g. Case → Status: *Open* = New, In progress). Moving a card sets the first value unless the record already has one of them; a record changed elsewhere moves its card |
+| Auto-add (optional) | Every record with a mapped value lands in its stage by itself, e.g. all Cases with Status = In progress in "Doing"; the settings show how many records each value would add |
 | Stage rules | Fields that must be filled before a card may enter a stage ("Fill Result details first") |
 | Flow control | Card limit per stage (over-limit columns get red stripes), "stale after N days" marker, time in stage on every card |
 | History | Every stage change is recorded (who, when, from, to); per-card history table |
@@ -27,6 +29,7 @@ No C#, no business processes, no compilation: the package contains two objects a
 
 - Creatio 8.x with Freedom UI. Built and tested on **10.1.796** (PostgreSQL).
 - Package dependencies: `CrtBase`, `CrtUIv2`.
+- Version **1.0.1**. After installation it appears in Application Hub as *hpKanban*, developer *Hubert Pacia*.
 
 ## Installation
 
@@ -35,62 +38,6 @@ No C#, no business processes, no compilation: the package contains two objects a
    - **Application Hub** → **New application** → **Install from file** → select `hpKanban.zip`, or
    - with [clio](https://github.com/Advance-Technologies-Foundation/clio): `clio push-pkg hpKanban.zip -e <environment>`
 3. Reload the browser (Ctrl+F5). No compilation or restart is needed.
-
-`hpKanban.gz` (the package itself, also in the repository root) installs the same way, but Creatio requires a `.gz` file to be named exactly like the package: a browser-renamed download such as `hpKanban (1).gz` is refused with "The name of your *.gz archive does not match the name specified in the descriptor.json file". The `.zip` has no such restriction.
-
-## Quick start
-
-1. Open any Freedom UI page in the page designer (gear icon → *Open page designer*, or *Application Hub* → your app → page).
-2. In **Components**, search for **Kanban board** (group *Custom components*) and drag it onto the page.
-3. Select the widget (click it, or pick it in the **Structure** tab) and expand the right panel. The panel gives the board its own id the first time it opens.
-4. Set the title, the stages and the allowed objects, then **Save** the page.
-5. Open the page, click **+ Add card**, pick an object and a stage, search a record and add it.
-
-## Configuration (designer → right panel)
-
-### General
-- **Title**, **Height** (`600px`, `70vh`, `calc(100vh - 160px)` …)
-- **Swimlanes** - none, by owner, by object
-- **Refresh every (seconds)** - quiet reload while the board is visible; `0` turns it off
-
-### Filters on the board
-Tick which controls users see: search box, object type, owner, "Stale only", sort order. A switched-off filter is hidden and stops filtering.
-
-### Stages
-Each stage is one row (colour dot, name, move left/right, remove) with a one-line summary such as `limit 8 · stale 3 d · 1 rule`. Click the summary to open it:
-- **Colour** - one of 8 swatches or none
-- **Card limit** - the header shows `count / limit`; amber at the limit, red badge and red stripes at the bottom of the column above it (moves stay allowed)
-- **Stale after N days** - older cards get a "stale" label; filter *Stale only*
-- **Required before a card may enter this stage** - per object, fields that must be filled (chips; *+ field* adds one)
-
-### Cards and totals (per allowed object)
-- **Fields on the card** - up to 4 columns
-- **Total field** - a numeric column summed per stage (values of different objects are added together, so use one currency/unit per board)
-- **Update a record field when the card changes stage** - tick it, choose a lookup field of the object, then map each stage to a value in the table (*don't change* leaves the record alone)
-- **Card colour**
-
-### Allowed objects
-A searchable table of all objects; ticked objects can be put on the board.
-
-## Using the board
-
-- **Add card** - choose object and stage, search by the object's display column, *Add*. **Add all matching (n)** adds every match (up to 100); records already on the board are skipped and stage rules apply to each one.
-- **Move** - drag and drop, or the ← / → buttons. In a sorted view (title, total, newest) dragging only changes the stage; choose *Manual order* to reorder.
-- **Open** - click the card title to open the record's own form page.
-- **Remove** - × takes the card off the board; the record itself is never deleted.
-- **History** - table of the card's moves (`dd.mm.yy HH:mm`, who, from, to).
-- **Collapse** - click a stage name to collapse the column (remembered in the browser).
-
-## Record sync and automation
-
-**Record sync.** With a field mapped (e.g. Activity → Status: *To do* = Not started, *Doing* = In progress, *Done* = Completed), moving a card first updates the record and then the card; if Creatio refuses the update (rights, business rules) the card stays and the message is shown. When the field is changed anywhere else, the card moves to the first stage mapped to the new value on the next load or refresh.
-
-**Automation - "when a card enters stage X, do Y".** Every add and every stage change writes one `hpKanbanCardMove` record. Create a business process with:
-1. Start event **Signal** → object *Kanban card move* → **Record added**, filtered by `Board code` = the board's code and `To stage code` = the stage id.
-2. *Read data* on the object named in `Object name` with `Id` = `Record Id`.
-3. Any actions you need (create a task, send an email, update a field …).
-
-The board code and the stage ids are visible in the page schema (`boardCode`, `stages[].id` of the `hp.KanbanBoard` element).
 
 ## Data model
 
@@ -119,6 +66,7 @@ packages/hpKanban/
   Schemas/hpKanbanCardMove/       object: move history
   Resources/                      object captions (en-US)
   Files/src/js/hp_kanban/         built widget bundle (output of component/)
+  Files/app-descriptor.json       application name, developer and version shown in Application Hub
 hpKanban.gz                       installable package archive
 ```
 
@@ -137,7 +85,6 @@ The widget uses `@creatio-devkit/common` and `@creatio/interface-designer` 0.100
 
 ## Limitations and notes
 
-- The widget appears in the designer's **Custom components** group; the platform API does not allow adding it to the built-in *Widgets* group.
 - A board loads at most 1000 cards; filtering is done in the browser.
 - Refresh is polling (no server push).
 - After upgrading the package, users may need a hard reload (Ctrl+F5): the bundle file names are fixed, so browsers can keep the old version.

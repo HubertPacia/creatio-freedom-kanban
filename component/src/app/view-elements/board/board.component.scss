@@ -68,6 +68,32 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   color: var(--crt-neutral-700, #4d4d4d);
 }
 .message.error { background: #fdecea; color: #a4200f; }
+/* Errors float in the middle of the user's screen (not of the board, which may be scrolled out of view). */
+.message.toast {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10000;
+  max-width: min(440px, calc(100vw - 32px));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+.card.saving { opacity: 0.7; cursor: progress; }
+/* Where a dragged card will land: a line above the card, or at the end of the column. */
+.card.drop-before { box-shadow: 0 -3px 0 0 var(--crt-primary-color, #0058ef); }
+.drop-end::after {
+  content: '';
+  display: block;
+  height: 3px;
+  margin-top: 4px;
+  border-radius: 2px;
+  background: var(--crt-primary-color, #0058ef);
+}
+.show-more { align-self: center; margin: 4px 0; }
+.column-add { padding: 0 6px; line-height: 18px; }
 
 .columns {
   flex: 1;
@@ -116,6 +142,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .column-body {
   flex: 1;
   overflow-y: auto;
+  /* No scrollbar: the wheel, touch and the card menu's "Scroll to bottom" scroll the column. */
+  scrollbar-width: none;
   padding: 4px 8px 12px;
   display: flex;
   flex-direction: column;
@@ -153,12 +181,39 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 }
 .card-title:hover { text-decoration: underline; }
 .remove { line-height: 1; font-size: 16px; }
+.remove[aria-disabled="true"] { opacity: 0.35; cursor: not-allowed; }
+.card-top .card-title { flex: 1; }
+
+.card-menu { position: relative; }
+.menu-toggle { line-height: 1; font-size: 16px; padding: 0 4px; }
+.menu {
+  position: fixed;
+  z-index: 10001;
+  min-width: 170px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+  background: var(--crt-neutral-0, #fff);
+  border: 1px solid var(--crt-neutral-200, #e0e0e0);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+.menu [role=menuitem] {
+  text-align: left;
+  padding: 6px 12px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.menu [role=menuitem]:hover:not([disabled]), .menu [role=menuitem]:focus-visible { background: var(--crt-neutral-50, #f2f6ff); }
+.menu [role=menuitem][disabled] { color: var(--crt-neutral-400, #aaa); cursor: default; }
 
 .card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
 .chip { padding: 1px 8px; border-radius: 10px; background: var(--crt-neutral-100, #eef1f6); color: var(--crt-neutral-700, #4d4d4d); }
 
-.move { display: flex; gap: 4px; justify-content: flex-end; }
-.move button { border: 1px solid var(--crt-neutral-200, #e0e0e0); }
 
 .add-panel {
   border: 1px solid var(--crt-neutral-200, #e0e0e0);
@@ -234,8 +289,6 @@ button.column-title:hover { text-decoration: underline; }
 .age { color: var(--crt-neutral-600, #666); }
 .stale-label { padding: 1px 6px; border-radius: 10px; background: #d92d20; color: #fff; font-size: 11px; }
 
-.move { align-items: center; }
-.move .spacer { flex: 1; }
 .history { font-size: 12px; color: var(--crt-neutral-700, #4d4d4d); border-top: 1px solid var(--crt-neutral-100, #f0f0f0); padding-top: 6px; }
 .history .when { color: var(--crt-neutral-600, #666); }
 
@@ -280,3 +333,5 @@ button.column-title:hover { text-decoration: underline; }
 .history-table th, .history-table td { text-align: left; padding: 3px 4px; border-bottom: 1px solid var(--crt-neutral-100, #f0f0f0); vertical-align: top; }
 .history-table th { font-weight: 600; color: var(--crt-neutral-600, #666); background: var(--crt-neutral-50, #f7f7f7); }
 .history-table td.when { white-space: nowrap; color: var(--crt-neutral-600, #666); }
+
+.column-body::-webkit-scrollbar { display: none; }

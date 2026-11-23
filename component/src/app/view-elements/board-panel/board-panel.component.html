@@ -137,7 +137,7 @@
         <section class="hp-kp-section" aria-labelledby="hpKpCards">
           <h3 id="hpKpCards" class="hp-kp-title">Cards and totals</h3>
           @for (name of entities(); track name) {
-            <details class="hp-kp-object">
+            <details class="hp-kp-object" [open]="!!openObjects()[name]" (toggle)="onObjectToggle(name, $event)">
               <summary>
                 @if (settingsOf(name).color) {
                   <span class="hp-kp-swatch" [style.background]="colors[settingsOf(name).color]" aria-hidden="true"></span>
@@ -191,7 +191,7 @@
                           <table class="hp-kp-table hp-kp-map">
                             <caption class="hp-kp-sr">Stage to {{ columnCaption(name, settingsOf(name).statusColumn) }} mapping for {{ captionOf(name) }}</caption>
                             <thead>
-                              <tr><th scope="col">Stage</th><th scope="col">{{ columnCaption(name, settingsOf(name).statusColumn) }}</th></tr>
+                              <tr><th scope="col" class="hp-kp-col-stage">Stage</th><th scope="col">{{ columnCaption(name, settingsOf(name).statusColumn) }}</th><th scope="col" class="hp-kp-center hp-kp-col-auto">Auto-add</th></tr>
                             </thead>
                             <tbody>
                               @for (stage of stages(); track stage.id; let i = $index) {
@@ -201,20 +201,44 @@
                                     {{ stage.caption }}
                                   </th>
                                   <td>
-                                    <select [attr.aria-label]="columnCaption(name, settingsOf(name).statusColumn) + ' for stage ' + stage.caption"
-                                            (change)="onStageStatus(i, name, $event)">
-                                      <option value="" [selected]="!stage.statusValues?.[name]">— don't change —</option>
-                                      @for (v of values; track v.id) {
-                                        <option [value]="v.id" [selected]="stage.statusValues?.[name] === v.id">{{ v.caption }}</option>
+                                    <div class="hp-kp-chips">
+                                      @for (v of valuesOf(stage, name); track v) {
+                                        <span class="hp-kp-chip">{{ valueCaption(name, v) }}
+                                          <button type="button" class="hp-kp-chip-x" (click)="removeStageValue(i, name, v)"
+                                                  [attr.aria-label]="'Remove ' + valueCaption(name, v) + ' from ' + stage.caption">&times;</button>
+                                        </span>
                                       }
-                                    </select>
+                                      @if (!valuesOf(stage, name).length) { <span class="hp-kp-muted">don't change</span> }
+                                      <select class="hp-kp-add-value" (change)="addStageValue(i, name, $event)"
+                                              [attr.aria-label]="'Add a ' + columnCaption(name, settingsOf(name).statusColumn) + ' value for stage ' + stage.caption">
+                                        <option value="" selected>+ value</option>
+                                        @for (v of values; track v.id) {
+                                          @if (!valuesOf(stage, name).includes(v.id)) { <option [value]="v.id">{{ v.caption }}</option> }
+                                        }
+                                      </select>
+                                    </div>
+                                    @if (duplicateOf(i, name); as first) {
+                                      <div class="hp-kp-warn">A value is also on "{{ first }}": that stage is used for it.</div>
+                                    }
                                   </td>
+                                  <td class="hp-kp-center"><span class="hp-kp-auto">
+                                    <input type="checkbox" [checked]="!!stage.autoAdd?.[name]" [disabled]="!valuesOf(stage, name).length"
+                                           [attr.aria-label]="'Put every ' + captionOf(name) + ' with these values into ' + stage.caption + ' (' + countText(name, valuesOf(stage, name)) + ' records)'"
+                                           [title]="valuesOf(stage, name).length ? 'Every record with one of these values gets a card here' : 'Choose a value first'"
+                                           (change)="onStageAutoAdd(i, name, $event)">
+                                    @if (valuesOf(stage, name).length) {
+                                      <span class="hp-kp-count" [title]="countText(name, valuesOf(stage, name)) + ' records have one of these values'"
+                                            aria-hidden="true">{{ countText(name, valuesOf(stage, name)) }}</span>
+                                    }
+                                  </span></td>
                                 </tr>
                               }
                             </tbody>
                           </table>
-                          <p class="hp-kp-hint">Moving a card into a stage sets the field on the record. When the field is changed
-                            elsewhere, the card moves to the first stage with that value. "Don't change" leaves the record alone.</p>
+                          <p class="hp-kp-hint">A stage can stand for several values. Moving a card into it sets the first one,
+                            unless the record already has one of them. When the field is changed elsewhere, the card moves to the
+                            first stage with the new value. "Don't change" leaves the record alone. Auto-add: every record with
+                            one of the values gets a card in the stage when the board loads.</p>
                         }
                       }
                     }

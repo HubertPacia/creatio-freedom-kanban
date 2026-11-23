@@ -55,7 +55,7 @@
   }
 
   @if (error) {
-    <div class="message error" role="alert">
+    <div class="message error toast" role="alert">
       {{ error }}
       @if (errorRecord) { <button type="button" class="ghost small" (click)="openErrorRecord()">Open record</button> }
       <button type="button" class="ghost small" (click)="dismissError()" aria-label="Dismiss message">&times;</button>
@@ -133,6 +133,10 @@
       } @else {
         <span class="count" [attr.aria-label]="visible(stage.id).length + ' cards'">{{ visible(stage.id).length }}</span>
       }
+      @if (entityInfos.length) {
+        <button type="button" class="ghost small column-add" (click)="openAdd(stage.id)"
+                [attr.aria-label]="'Add card to ' + stage.caption" [title]="'Add card to ' + stage.caption">+</button>
+      }
     </span>
   </div>
   </ng-template>
@@ -146,16 +150,50 @@
     </button>
   </ng-template>
 
-  <ng-template #cardTpl let-card let-stage="stage">
-    <article class="card" role="listitem" draggable="true" [class.dragging]="draggedId === card.id"
+  <ng-template #cardTpl let-card let-stage="stage" let-first="first" let-last="last">
+    <article class="card" role="listitem" [attr.draggable]="!isSaving(card)" [class.dragging]="draggedId === card.id"
+             [class.drop-before]="dropBeforeId === card.id"
+             [class.saving]="isSaving(card)" [attr.aria-busy]="isSaving(card)"
              [class.stale]="card.stale"
              [style.border-left-color]="cardColor(card)" [class.colored]="!!cardColor(card)"
              (dragstart)="onDragStart($event, card)" (dragend)="onDragEnd()"
-             (dragover)="onDragOver($event, stage.id)" (drop)="onDrop($event, stage.id, card)">
+             (dragover)="onDragOver($event, stage.id, card)" (drop)="onDrop($event, stage.id, card)">
       <div class="card-top">
         <a href="#" class="card-title" (click)="open(card, $event)">{{ card.title }}</a>
-        <button type="button" class="ghost remove" (click)="removeCard(card)"
-                [attr.aria-label]="'Remove ' + card.title + ' from the board'" title="Remove from board">&times;</button>
+        <div class="card-menu">
+          <button type="button" class="ghost menu-toggle" (click)="toggleMenu(card, $event)" aria-haspopup="menu"
+                  [attr.aria-expanded]="menuCardId === card.id" [attr.aria-label]="'Actions for ' + card.title" title="Actions">&#x22EF;</button>
+          @if (menuCardId === card.id) {
+            <div class="menu" role="menu" [attr.aria-label]="'Actions for ' + card.title"
+                 [style.top.px]="menuPos?.top" [style.left.px]="menuPos?.left" [style.visibility]="menuPos ? null : 'hidden'"
+                 (click)="$event.stopPropagation()" (keydown)="onMenuKey($event)">
+              @if (neighbour(stage.id, -1); as prev) {
+                <button type="button" role="menuitem" [disabled]="isSaving(card)"
+                        (click)="menuAction($event, step.bind(this, card, stage.id, -1))">&larr; Move to {{ prev.caption }}</button>
+              }
+              @if (neighbour(stage.id, 1); as next) {
+                <button type="button" role="menuitem" [disabled]="isSaving(card)"
+                        (click)="menuAction($event, step.bind(this, card, stage.id, 1))">&rarr; Move to {{ next.caption }}</button>
+              }
+              @if (sortMode === 'manual') {
+                <button type="button" role="menuitem" [disabled]="first || isSaving(card)"
+                        (click)="menuAction($event, shift.bind(this, card, stage.id, -1))">&uarr; Move up</button>
+                <button type="button" role="menuitem" [disabled]="last || isSaving(card)"
+                        (click)="menuAction($event, shift.bind(this, card, stage.id, 1))">&darr; Move down</button>
+              }
+              <button type="button" role="menuitem" (click)="menuAction($event, scrollToBottom.bind(this, scrollBoxOf($event)))">&#x2913; Scroll to bottom</button>
+              <button type="button" role="menuitem" (click)="menuAction($event, toggleHistory.bind(this, card))">
+                {{ historyOf(card) ? 'Hide history' : 'History' }}</button>
+            </div>
+          }
+        </div>
+        @if (autoKept(card); as reason) {
+          <button type="button" class="ghost remove" aria-disabled="true" [title]="reason"
+                  [attr.aria-label]="'Remove ' + card.title + ' from the board: not available. ' + reason">&times;</button>
+        } @else {
+          <button type="button" class="ghost remove" (click)="removeCard(card)" [disabled]="isSaving(card)"
+                  [attr.aria-label]="'Remove ' + card.title + ' from the board'" title="Remove from board">&times;</button>
+        }
       </div>
       @if (card.values?.length) {
         <dl class="card-values">
@@ -168,19 +206,6 @@
         <span class="chip">{{ entityCaption(card.entityName) }}</span>
         <span class="age" [title]="'In this stage since ' + (card.stageSince || '?')">{{ age(card) }} in stage</span>
         @if (card.stale) { <span class="stale-label">stale</span> }
-      </div>
-      <div class="move">
-        <button type="button" class="ghost small history-toggle" (click)="toggleHistory(card)"
-                [attr.aria-expanded]="!!historyOf(card)" [attr.aria-label]="'History of ' + card.title">History</button>
-        <span class="spacer"></span>
-        @if (neighbour(stage.id, -1); as prev) {
-          <button type="button" class="ghost small" (click)="step(card, stage.id, -1)"
-                  [attr.aria-label]="'Move ' + card.title + ' to ' + prev.caption" [title]="'Move to ' + prev.caption">&larr;</button>
-        }
-        @if (neighbour(stage.id, 1); as next) {
-          <button type="button" class="ghost small" (click)="step(card, stage.id, 1)"
-                  [attr.aria-label]="'Move ' + card.title + ' to ' + next.caption" [title]="'Move to ' + next.caption">&rarr;</button>
-        }
       </div>
       @if (historyOf(card); as h) {
         <div class="history" aria-live="polite">
@@ -211,7 +236,7 @@
   </ng-template>
 
   @if (swimlaneMode === 'none') {
-  <div class="columns" [class.loading]="loading && !quiet">
+  <div class="columns" (scroll)="closeMenu()" [class.loading]="loading && !quiet">
     @for (stage of stageList; track stage.id) {
       @if (isCollapsed(stage.id)) {
         <div class="column collapsed" [class.drop]="dropStage === stage.id" [class.wip-over]="wip(stage) === 'over'"
@@ -223,9 +248,13 @@
            (dragover)="onDragOver($event, stage.id)" (drop)="onDrop($event, stage.id)"
            role="list" [attr.aria-label]="stage.caption">
         <ng-container *ngTemplateOutlet="headTpl; context: { $implicit: stage }"></ng-container>
-        <div class="column-body">
-          @for (card of visible(stage.id); track card.id) {
-            <ng-container *ngTemplateOutlet="cardTpl; context: { $implicit: card, stage: stage }"></ng-container>
+        <div class="column-body" (scroll)="closeMenu()" [class.drop-end]="dropStage === stage.id && !dropBeforeId">
+          @for (card of limited(visible(stage.id), stage.id); track card.id; let first = $first, last = $last) {
+            <ng-container *ngTemplateOutlet="cardTpl; context: { $implicit: card, stage: stage, first: first,
+              last: last && !hiddenCount(visible(stage.id), stage.id) }"></ng-container>
+          }
+          @if (hiddenCount(visible(stage.id), stage.id); as more) {
+            <button type="button" class="ghost small show-more" (click)="showMore(stage.id)">Show {{ more > 50 ? 50 : more }} more ({{ more }} hidden)</button>
           }
         </div>
       </div>
@@ -234,7 +263,7 @@
   </div>
   } @else {
   <div class="hint">Lanes by {{ swimlaneMode === 'owner' ? 'owner' : 'object' }}: dragging into another lane changes only the stage.</div>
-  <div class="lanes" [class.loading]="loading && !quiet" [style.grid-template-columns]="gridColumns()">
+  <div class="lanes" (scroll)="closeMenu()" [class.loading]="loading && !quiet" [style.grid-template-columns]="gridColumns()">
     @for (stage of stageList; track stage.id) {
       <div class="lane-head" [class.collapsed]="isCollapsed(stage.id)" [class.wip-over]="wip(stage) === 'over'">
         @if (isCollapsed(stage.id)) {
@@ -248,14 +277,19 @@
       <div class="lane-title" role="heading" aria-level="3">{{ lane.caption }} <span class="count">{{ lane.count }}</span></div>
       @for (stage of stageList; track stage.id) {
         <div class="lane-cell" [class.collapsed]="isCollapsed(stage.id)" [class.drop]="dropStage === stage.id"
+             [class.drop-end]="dropStage === stage.id && !dropBeforeId"
              [class.wip-over]="wip(stage) === 'over'"
              (dragover)="onDragOver($event, stage.id)" (drop)="onDrop($event, stage.id)"
              role="list" [attr.aria-label]="lane.caption + ', ' + stage.caption">
           @if (isCollapsed(stage.id)) {
             <span class="count">{{ cellCards(stage.id, lane.key).length }}</span>
           } @else {
-            @for (card of cellCards(stage.id, lane.key); track card.id) {
-              <ng-container *ngTemplateOutlet="cardTpl; context: { $implicit: card, stage: stage }"></ng-container>
+            @for (card of limited(cellCards(stage.id, lane.key), stage.id + '|' + lane.key); track card.id; let first = $first, last = $last) {
+              <ng-container *ngTemplateOutlet="cardTpl; context: { $implicit: card, stage: stage, first: first,
+                last: last && !hiddenCount(cellCards(stage.id, lane.key), stage.id + '|' + lane.key) }"></ng-container>
+            }
+            @if (hiddenCount(cellCards(stage.id, lane.key), stage.id + '|' + lane.key); as more) {
+              <button type="button" class="ghost small show-more" (click)="showMore(stage.id + '|' + lane.key)">Show {{ more > 50 ? 50 : more }} more ({{ more }} hidden)</button>
             }
           }
         </div>

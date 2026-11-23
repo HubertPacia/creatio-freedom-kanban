@@ -9,10 +9,15 @@ export interface Stage {
 	wipLimit?: number;
 	/** A card older than this many days in the stage is "stale". */
 	rotDays?: number;
-	/** Per object: the status lookup value (Id) this stage means; moving here writes it to the record. */
-	statusValues?: Record<string, string>;
+	/**
+	 * Per object: the lookup values (Ids) this stage stands for. A record with any of them belongs here; moving a card
+	 * here writes the first one unless the record already has one of them.
+	 */
+	statusValues?: Record<string, string[]>;
 	/** Per object: columns that must be filled before a card may enter this stage. */
 	requiredFields?: Record<string, string[]>;
+	/** Per object: true = every record with this stage's status value gets a card here by itself. */
+	autoAdd?: Record<string, true>;
 }
 
 export interface CardValue {
@@ -53,6 +58,8 @@ export interface ObjectSettings {
 	statusColumn: string;
 }
 
+/** Lookup values one stage may stand for, per object. */
+export const MAX_STATUS_VALUES = 20;
 export const MAX_REQUIRED_FIELDS = 10;
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -158,6 +165,11 @@ export function normalizeStages(raw: unknown): Stage[] {
 		if (requiredFields) {
 			stage.requiredFields = requiredFields;
 		}
+		const autoAdd = typeof item === 'object' ? plainMap(item?.autoAdd) : null;
+		const autoNames = Object.keys(autoAdd ?? {}).filter((n) => NAME.test(n) && autoAdd![n] === true && statusValues?.[n]?.length);
+		if (autoNames.length) {
+			stage.autoAdd = Object.fromEntries(autoNames.map((n) => [n, true as const]));
+		}
 		result.push(stage);
 		if (result.length === MAX_STAGES) {
 			break;
@@ -229,32 +241,50 @@ export function moveCard(columns: Map<string, Card[]>, cardId: string, toStage: 
 	}
 	let source: Card[] | undefined;
 	let card: Card | undefined;
+	let fromIndex = -1;
 	for (const column of columns.values()) {
-		const index = column.findIndex((c) => c.id === cardId);
-		if (index >= 0) {
+		fromIndex = column.findIndex((c) => c.id === cardId);
+		if (fromIndex >= 0) {
 			source = column;
-			card = column.splice(index, 1)[0];
+			card = column.splice(fromIndex, 1)[0];
 			break;
 		}
 	}
 	if (!card || !source) {
 		return [];
 	}
-	const before = new Map<string, string>();
-	for (const c of [...source, ...target, card]) {
-		before.set(c.id, `${c.stageCode}|${c.position}`);
+	const index = Math.max(0, Math.min(toIndex, target.length));
+	target.splice(index, 0, card);
+	if (source === target && index === fromIndex && card.stageCode === toStage) {
+		return []; // dropped where it was
 	}
-	target.splice(Math.max(0, Math.min(toIndex, target.length)), 0, card);
 	card.stageCode = toStage;
-	source.forEach((c, i) => (c.position = i));
-	target.forEach((c, i) => (c.position = i));
-	const touched = source === target ? target : [...source, ...target];
-	return touched.filter((c) => before.get(c.id) !== `${c.stageCode}|${c.position}`);
+	// Positions have gaps (POSITION_STEP): the moved card takes a value between its neighbours and nothing else is
+	// written. Only when there is no room left is the column renumbered.
+	const prev = target[index - 1]?.position;
+	const next = target[index + 1]?.position;
+	if (prev === undefined && next === undefined) {
+		card.position = 0;
+	} else if (next === undefined) {
+		card.position = prev! + POSITION_STEP;
+	} else if (prev === undefined) {
+		card.position = next - POSITION_STEP;
+	} else if (next - prev >= 2) {
+		card.position = Math.floor((prev + next) / 2);
+	} else {
+		const before = new Map(target.map((c) => [c.id, c.position]));
+		target.forEach((c, i) => (c.position = i * POSITION_STEP));
+		return target.filter((c) => c === card || before.get(c.id) !== c.position);
+	}
+	return [card];
 }
 
+/** Distance between neighbouring positions, so a move between two cards writes only the moved one. */
+export const POSITION_STEP = 1000;
+
 /** Next position at the end of a column. */
-export function nextPosition(column: Card[] | undefined): number {
-	return column?.length ? Math.max(...column.map((c) => c.position)) + 1 : 0;
+export function nextPosition(column: Array<{ position: number }> | undefined): number {
+	return column?.length ? Math.max(...column.map((c) => c.position)) + POSITION_STEP : 0;
 }
 
 /**
@@ -445,15 +475,18 @@ function plainMap(value: unknown): Record<string, unknown> | null {
 }
 
 /** { object: lookupId } with valid object names and GUIDs only; null when nothing is left. */
-function cleanStatusValues(value: unknown): Record<string, string> | null {
+function cleanStatusValues(value: unknown): Record<string, string[]> | null {
 	const map = plainMap(value);
 	if (!map) {
 		return null;
 	}
-	const result: Record<string, string> = {};
-	for (const [name, id] of Object.entries(map)) {
-		if (NAME.test(name) && typeof id === 'string' && GUID.test(id)) {
-			result[name] = id.toLowerCase();
+	const result: Record<string, string[]> = {};
+	for (const [name, raw] of Object.entries(map)) {
+		// A board saved before several values were allowed stores one Id as a string.
+		const ids = (Array.isArray(raw) ? raw : [raw])
+			.filter((id): id is string => typeof id === 'string' && GUID.test(id)).map((id) => id.toLowerCase());
+		if (NAME.test(name) && ids.length) {
+			result[name] = [...new Set(ids)].slice(0, MAX_STATUS_VALUES);
 		}
 	}
 	return Object.keys(result).length ? result : null;
@@ -484,29 +517,91 @@ export function stageForStatus(stages: Stage[], entityName: string, statusId: st
 		return undefined;
 	}
 	const id = statusId.toLowerCase();
-	return stages.find((s) => s.statusValues?.[entityName] === id);
+	return stages.find((s) => s.statusValues?.[entityName]?.includes(id));
+}
+
+/**
+ * The value to write when a card enters `stage`: none when the stage maps no value for the object or the record already
+ * has one of the stage's values (`current` unknown = undefined: the first value is written).
+ */
+export function statusToWrite(stage: Stage | undefined, entityName: string, current: string | null | undefined): string | undefined {
+	const values = stage?.statusValues?.[entityName];
+	if (!values?.length || (current && values.includes(current.toLowerCase()))) {
+		return undefined;
+	}
+	return values[0];
+}
+
+/** Status values whose records are put on the board by themselves (stages with auto-add for this object). */
+export function autoAddValues(stages: Stage[], entityName: string): string[] {
+	return [...new Set(stages.filter((s) => s.autoAdd?.[entityName]).flatMap((s) => s.statusValues?.[entityName] ?? []))];
+}
+
+/**
+ * Records not on the board whose status maps to an auto-add stage, with that stage, at most `limit`.
+ * The first stage mapped to a status decides (as in reconcileStages); `onBoard` holds lower-case record ids.
+ */
+export function autoAddTargets(stages: Stage[], entityName: string, records: Array<{ id: string; statusId: string | null }>,
+	onBoard: Set<string>, limit: number): Array<{ recordId: string; stageCode: string }> {
+	const result: Array<{ recordId: string; stageCode: string }> = [];
+	for (const record of records) {
+		const stage = stageForStatus(stages, entityName, record.statusId);
+		if (result.length < limit && stage?.autoAdd?.[entityName] && !onBoard.has(record.id.toLowerCase())) {
+			onBoard.add(record.id.toLowerCase());
+			result.push({ recordId: record.id, stageCode: stage.id });
+		}
+	}
+	return result;
+}
+
+/**
+ * The same board, object and record always give the same card Id, so two viewers auto-adding one record at once
+ * collide on the primary key instead of creating a duplicate card.
+ */
+export function cardIdFor(boardCode: string, entityName: string, recordId: string): string {
+	return stableId(boardCode, entityName, recordId.toLowerCase());
+}
+
+/** A GUID that depends only on the parts: rows several boards would write for one event share it. Not a security hash. */
+export function stableId(...parts: string[]): string {
+	const text = parts.join('|');
+	const hex = [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35].map((seed) => {
+		let h = seed;
+		for (let i = 0; i < text.length; i++) {
+			h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+		}
+		h = Math.imul(h ^ (h >>> 16), 0x2c1b3c6d);
+		h = Math.imul(h ^ (h >>> 13), 0x297a2d39);
+		return ((h ^ (h >>> 16)) >>> 0).toString(16).padStart(8, '0');
+	}).join('');
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /**
  * The record is the truth: a card whose record status maps to another stage is moved there (stageCode set, placed at
  * the end of that stage). Returns the moved cards with the stage they came from; their rows must be saved.
- * A status no stage maps, or a card already in its mapped stage, is left alone.
+ * A status no stage maps, a card already in its mapped stage, and a card in a stage that maps no value for its
+ * object ("don't change": put there on purpose) are left alone.
  */
 export function reconcileStages(cards: Card[], stages: Stage[]): Array<{ card: Card; fromCode: string }> {
 	const moved: Array<{ card: Card; fromCode: string }> = [];
 	const nextInStage = new Map<string, number>();
 	for (const card of cards) {
-		nextInStage.set(card.stageCode, Math.max(nextInStage.get(card.stageCode) ?? 0, card.position + 1));
+		nextInStage.set(card.stageCode, Math.max(nextInStage.get(card.stageCode) ?? 0, card.position + POSITION_STEP));
 	}
 	for (const card of cards) {
 		const target = stageForStatus(stages, card.entityName, card.statusId);
-		if (!target || target.id === card.stageCode) {
+		const current = stages.find((s) => s.id === card.stageCode);
+		const currentValues = current?.statusValues?.[card.entityName];
+		// Stays: no stage has the value, the card's own stage has it too, or its stage is "don't change" (put there on purpose).
+		if (!target || target.id === card.stageCode || (current && (!currentValues?.length
+			|| currentValues.includes(String(card.statusId).toLowerCase())))) {
 			continue;
 		}
 		moved.push({ card, fromCode: card.stageCode });
 		card.stageCode = target.id;
 		card.position = nextInStage.get(target.id) ?? 0;
-		nextInStage.set(target.id, card.position + 1);
+		nextInStage.set(target.id, card.position + POSITION_STEP);
 	}
 	return moved;
 }

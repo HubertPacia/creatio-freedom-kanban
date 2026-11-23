@@ -105,7 +105,21 @@
 .hp-kp-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .hp-kp-sync { display: flex; flex-direction: column; gap: 6px; padding: 6px 0; border-top: 1px dashed var(--crt-neutral-200, #e0e0e0); margin-bottom: 8px; }
-.hp-kp-map th[scope="row"] { font-weight: 500; white-space: nowrap; display: flex; align-items: center; gap: 6px; border-bottom: 0; }
+/* Fixed columns: chips and long stage names wrap instead of pushing Auto-add out of the 350 px panel. */
+.hp-kp-map { table-layout: fixed; }
+.hp-kp-map .hp-kp-col-stage { width: 34%; }
+.hp-kp-map .hp-kp-col-auto { width: 66px; }
+/* Row headers stay table cells (no flex), so their grey fills the whole row when a warning makes it taller. */
+.hp-kp-map th[scope="row"] { position: static; font-weight: 500; white-space: normal; overflow-wrap: anywhere; vertical-align: top; padding-top: 8px; }
+.hp-kp-muted { font-size: 12px; color: var(--crt-neutral-600, #6b6b6b); }
+.hp-kp-map th[scope="row"] .hp-kp-dot { display: inline-block; vertical-align: middle; margin-right: 6px; }
+.hp-kp-map td { vertical-align: top; }
+.hp-kp-center { white-space: nowrap; }
+.hp-kp-auto { display: inline-flex; align-items: center; gap: 6px; padding-top: 4px; }
+.hp-kp-count { font-size: 11px; color: var(--crt-neutral-600, #6b6b6b); min-width: 3ch; }
+.hp-kp-warn { margin-top: 2px; font-size: 11px; color: #8a5300; }
 .hp-kp-map tr { border-bottom: 1px solid var(--crt-neutral-100, #f0f0f0); }
 .hp-kp-map td select { width: 100%; font-size: 12px; padding: 2px 4px; }
+.hp-kp-map .hp-kp-chips { align-items: center; }
+.hp-kp-map .hp-kp-chips select.hp-kp-add-value { width: auto; max-width: 100%; }
 .hp-kp-map th[scope="col"] { position: static; }
