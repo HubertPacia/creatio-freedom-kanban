@@ -123,3 +123,45 @@
 .hp-kp-map .hp-kp-chips { align-items: center; }
 .hp-kp-map .hp-kp-chips select.hp-kp-add-value { width: auto; max-width: 100%; }
 .hp-kp-map th[scope="col"] { position: static; }
+
+.hp-kp-create { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-bottom: 6px; }
+.hp-kp-copy { width: 100%; font: 12px/1.4 monospace; resize: vertical; margin: 6px 0; }
+.hp-kp button[aria-pressed="true"] { background: var(--crt-neutral-100, #eef1f6); }
+
+/* Card layout editor */
+.hp-kp-layout { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.hp-kp-layout-row { display: flex; align-items: center; gap: 4px; }
+.hp-kp-layout-row select { flex: 1; min-width: 0; }
+.hp-kp button.hp-kp-icon-btn { width: 28px; height: 28px; padding: 0; flex: 0 0 28px; display: inline-flex; align-items: center; justify-content: center; }
+.hp-kp-preview .hp-kp-ico { width: 14px; height: 14px; }
+.hp-kp-ico { display: inline-block; width: 16px; height: 16px; flex: 0 0 auto; background: currentColor; vertical-align: -3px;
+  mask: center / contain no-repeat; -webkit-mask: center / contain no-repeat; }
+.hp-kp-ico-none { color: var(--crt-neutral-500, #8a8a8a); }
+.hp-kp-seg { display: inline-flex; flex: 0 0 auto; }
+.hp-kp-seg button { padding: 2px 6px; font-size: 11px; border-radius: 0; }
+.hp-kp-seg button:first-child { border-radius: 4px 0 0 4px; }
+.hp-kp-seg button:last-child { border-radius: 0 4px 4px 0; margin-left: -1px; }
+.hp-kp-seg button[aria-checked="true"] { background: var(--crt-primary-color, #0058ef); color: #fff; border-color: var(--crt-primary-color, #0058ef); }
+.hp-kp-icon-picker { margin-top: 4px; padding: 6px; border: 1px solid var(--crt-neutral-200, #e0e0e0); border-radius: 6px; }
+.hp-kp-icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(28px, 1fr)); gap: 2px; max-height: 168px; overflow-y: auto; margin-top: 6px; }
+.hp-kp button.hp-kp-icon-choice { width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+/* Preview: a card as the board draws it */
+.hp-kp-preview { border: 1px solid var(--crt-neutral-200, #e0e0e0); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;
+  background: var(--crt-neutral-0, #fff); box-shadow: 0 1px 3px rgba(0, 0, 0, .08); font-size: 12px; }
+.hp-kp-preview-title { color: var(--crt-primary-color, #0058ef); font-weight: 600; font-size: 13px; padding-left: 8px; }
+.hp-kp-preview-line { display: flex; align-items: center; gap: 4px; padding: 1px 8px; color: var(--crt-neutral-800, #333); }
+.hp-kp-preview-label { color: var(--crt-neutral-600, #666); }
+.hp-kp-preview-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.hp-kp-preview-tag { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 10px; background: var(--crt-neutral-100, #eef1f6); }
+.hp-kp-preview-tag.soon { background: #fff4d6; color: #7a5200; }
+
+/* Two related settings side by side (total field + column total, due field + due soon days). */
+.hp-kp-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: end; }
+.hp-kp-pair .hp-kp-field { min-width: 0; }
+.hp-kp-pair select, .hp-kp-pair input { width: 100%; min-width: 0; }
+
+.hp-kp-due-days { display: flex; align-items: center; gap: 6px; margin: 4px 0 0 32px; font-size: 12px; color: var(--crt-neutral-600, #666); }
+.hp-kp-due-days span { white-space: nowrap; }
+.hp-kp .hp-kp-due-days input { width: 60px; flex: 0 0 60px; }
+.hp-kp-preview-items { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.hp-kp-preview-items .hp-kp-preview-line { flex: 0 0 100%; }

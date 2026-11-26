@@ -9,18 +9,23 @@ Kanban board widget for **Creatio Freedom UI**. Drop it onto any page from the p
 | No-code widget | Shows up in the Freedom UI page designer under **Custom components → Kanban board**; everything is configured in the designer's right-hand panel |
 | Your own stages | 1-12 stages with name, order and colour. Renaming a stage keeps its cards |
 | Any object | Choose which objects' records may be put on a board (Activity, Account, Contact, Case, custom objects…) |
-| Cards | Up to 4 fields per object shown on the cards (dates, lookups, numbers, text), a colour per object |
-| Column totals | Sum of a numeric field per stage (e.g. Amount), filters respected |
-| Drag and drop | Move cards between stages and reorder them, with a line showing where the card lands. A card moves at once and is saved in the background; if the save is refused it goes back and an error message says why |
+| Card layout | Per object, up to 8 fields on the card in any order, each with a Creatio icon and shown as a line (label: value), a tag, or the due date (a tag that turns amber when due soon, red when overdue); live preview in the settings; a colour per object |
+| Column totals | Sum, average, minimum or maximum of one numeric field per board (e.g. Amount), filters respected |
+| Drag and drop | Move cards between stages and reorder them, with a line showing where the card lands. A card moves at once and is saved in the background; if Creatio refuses the change it goes back and the message gives the stage, the field and Creatio's reason |
+| Due dates | Show a date field as *Due* in the card layout and set its "due soon" days per object; filter *Due soon / overdue* |
+| Locked objects | Per object, cards can be made unmovable (no drag and drop, no move actions) |
+| Compact mode | One click shows titles only (remembered per user) |
 | Card menu | ⋯ on every card: move to the previous / next stage, move up / down, scroll to bottom, history (keyboard friendly) |
 | Record sync (optional) | Map each stage to one or more lookup values (e.g. Case → Status: *Open* = New, In progress). Moving a card sets the first value unless the record already has one of them; a record changed elsewhere moves its card |
+| Stages from a field | *Create stages from Status values*: one stage per lookup value, mapped and coloured from the lookup |
 | Auto-add (optional) | Every record with a mapped value lands in its stage by itself, e.g. all Cases with Status = In progress in "Doing"; the settings show how many records each value would add |
 | Stage rules | Fields that must be filled before a card may enter a stage ("Fill Result details first") |
 | Flow control | Card limit per stage (over-limit columns get red stripes), "stale after N days" marker, time in stage on every card |
 | History | Every stage change is recorded (who, when, from, to); per-card history table |
 | Swimlanes | Rows by owner or by object |
-| Filters | Search, object type, owner (list of owners on the board / me / no owner), "Stale only", sort. Each filter can be switched off; users' choices are remembered per board |
+| Filters and toolbar | Search, object type, owner (list of owners on the board / me / no owner), "Stale only", due soon, sort. Each filter and each toolbar button (Compact, Refresh, Add card) can be switched off; users' choices are remembered per board |
 | Team use | Quiet auto-refresh (default every 30 s), bulk add ("Add all matching"), collapsible columns |
+| Copy settings | Export a board's settings as text and import them on another page |
 | Automation | Every move is a record of `hpKanbanCardMove`, so any Creatio business process can react to "card entered stage X" |
 
 No C#, no business processes, no compilation: the package contains two objects and a client-side Angular bundle.
@@ -29,7 +34,6 @@ No C#, no business processes, no compilation: the package contains two objects a
 
 - Creatio 8.x with Freedom UI. Built and tested on **10.1.796** (PostgreSQL).
 - Package dependencies: `CrtBase`, `CrtUIv2`.
-- Version **1.0.1**. After installation it appears in Application Hub as *hpKanban*, developer *Hubert Pacia*.
 
 ## Installation
 

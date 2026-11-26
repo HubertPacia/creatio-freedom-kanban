@@ -25,14 +25,14 @@
       </section>
 
       <section class="hp-kp-section" aria-labelledby="hpKpFilters">
-        <h3 id="hpKpFilters" class="hp-kp-title">Filters on the board</h3>
+        <h3 id="hpKpFilters" class="hp-kp-title">Toolbar</h3>
         @for (key of filterKeys; track key) {
           <label class="hp-kp-check">
             <input type="checkbox" [checked]="filterToggles()[key]" (change)="onFilterToggle(key, $event)" />
             {{ filterLabels[key] }}
           </label>
         }
-        <p class="hp-kp-hint">A filter switched off is hidden and no longer filters, even if a user had set it.</p>
+        <p class="hp-kp-hint">A control switched off is hidden; a hidden filter no longer filters, even if a user had set it.</p>
       </section>
 
       <section class="hp-kp-section" aria-labelledby="hpKpStages">
@@ -147,26 +147,117 @@
               </summary>
               @if (columns(name).length) {
                 <div class="hp-kp-field">
-                  <span class="hp-kp-label">Fields on the card (up to {{ fieldSlots.length }})</span>
-                  @for (slot of fieldSlots; track slot) {
-                    @if (slot <= settingsOf(name).fields.length) {
-                      <select [attr.aria-label]="captionOf(name) + ' card field ' + (slot + 1)" (change)="onField(name, slot, $event)">
-                        <option value="" [selected]="!settingsOf(name).fields[slot]">— none —</option>
-                        @for (col of columns(name); track col.name) {
-                          <option [value]="col.name" [selected]="settingsOf(name).fields[slot] === col.name">{{ col.caption }}</option>
-                        }
-                      </select>
+                  <span class="hp-kp-label">Card layout (up to {{ maxCardFields }} fields)</span>
+                  <ol class="hp-kp-layout">
+                    @for (item of layoutOf(name); track item.field; let i = $index; let first = $first; let last = $last) {
+                      <li>
+                        <div class="hp-kp-layout-row">
+                        <button type="button" class="hp-kp-icon-btn" (click)="toggleIconPicker(name + '|' + i)"
+                                [attr.aria-expanded]="iconPicker() === name + '|' + i" [attr.aria-label]="'Icon of ' + columnCaption(name, item.field)" title="Icon">
+                          @if (iconMask(item.icon); as mask) { <span class="hp-kp-ico" aria-hidden="true" [style.mask-image]="mask" [style.-webkit-mask-image]="mask"></span> }
+                          @else { <span class="hp-kp-ico-none" aria-hidden="true">+</span> }
+                        </button>
+                        <select [attr.aria-label]="'Card field ' + (i + 1)" (change)="setLayoutField(name, i, $event)">
+                          @for (col of freeColumns(name, item.field); track col.name) {
+                            <option [value]="col.name" [selected]="item.field === col.name">{{ col.caption }}</option>
+                          }
+                        </select>
+                        <div class="hp-kp-seg" role="radiogroup" [attr.aria-label]="'Show ' + columnCaption(name, item.field) + ' as'">
+                          <button type="button" role="radio" [attr.aria-checked]="item.style === 'line'" (click)="setLayoutStyle(name, i, 'line')">Line</button>
+                          <button type="button" role="radio" [attr.aria-checked]="item.style === 'tag'" (click)="setLayoutStyle(name, i, 'tag')">Tag</button>
+                          @if (isDateColumn(name, item.field)) {
+                            <button type="button" role="radio" [attr.aria-checked]="item.style === 'due'" (click)="setLayoutStyle(name, i, 'due')"
+                                    title="The due date: a tag that turns amber when due soon and red when overdue (one per object)">Due</button>
+                          }
+                        </div>
+                        <button type="button" class="hp-kp-icon" (click)="moveLayout(name, i, -1)" [disabled]="first" [attr.aria-label]="'Move ' + columnCaption(name, item.field) + ' up'">&uarr;</button>
+                        <button type="button" class="hp-kp-icon" (click)="moveLayout(name, i, 1)" [disabled]="last" [attr.aria-label]="'Move ' + columnCaption(name, item.field) + ' down'">&darr;</button>
+                        <button type="button" class="hp-kp-icon" (click)="removeLayout(name, i)" [attr.aria-label]="'Remove ' + columnCaption(name, item.field) + ' from the card'">&times;</button>
+                        </div>
+                        @if (iconPicker() === name + '|' + i) {
+                        <div class="hp-kp-icon-picker">
+                          <input type="search" class="hp-kp-search" placeholder="Search icons" aria-label="Search icons" (input)="onIconSearch($event)" />
+                          <div class="hp-kp-icon-grid" role="group" aria-label="Icons">
+                            <button type="button" class="hp-kp-icon-choice" (click)="pickIcon(name, i, '')" title="No icon" aria-label="No icon">&times;</button>
+                            @for (icon of filteredIcons(); track icon) {
+                              <button type="button" class="hp-kp-icon-choice" (click)="pickIcon(name, i, icon)" [title]="iconLabel(icon)" [attr.aria-label]="iconLabel(icon)">
+                                <span class="hp-kp-ico" aria-hidden="true" [style.mask-image]="iconMask(icon)" [style.-webkit-mask-image]="iconMask(icon)"></span>
+                              </button>
+                            }
+                          </div>
+                        </div>
+                      }
+                      @if (item.style === 'due') {
+                        <label class="hp-kp-due-days" title="Amber tag when due within this many days; red when overdue">
+                          <span>Due soon within</span>
+                          <input type="number" min="1" max="365" [value]="dueSoonOf(name)" (change)="onDueSoonDays(name, $event)" />
+                          <span>days</span>
+                        </label>
+                      }
+                      </li>
                     }
+                  </ol>
+                  @if (layoutOf(name).length < maxCardFields) {
+                    <select class="hp-kp-add-value" (change)="addLayoutField(name, $event)" [attr.aria-label]="'Add a field to the ' + captionOf(name) + ' card'">
+                      <option value="" selected>+ field</option>
+                      <optgroup label="As a line or tag">
+                        @for (col of freeColumns(name); track col.name) { <option [value]="col.name">{{ col.caption }}</option> }
+                      </optgroup>
+                      @if (!hasDueRow(name) && freeDateColumns(name).length) {
+                        <optgroup label="As the due date (amber when due soon, red when overdue)">
+                          @for (col of freeDateColumns(name); track col.name) { <option [value]="'due:' + col.name">{{ col.caption }} (due date)</option> }
+                        </optgroup>
+                      }
+                    </select>
                   }
                 </div>
-                <label class="hp-kp-field">
-                  <span class="hp-kp-label">Total field (summed per stage)</span>
-                  <select (change)="onSumField(name, $event)">
-                    <option value="" [selected]="!settingsOf(name).sumField">— no total —</option>
-                    @for (col of numericColumns(name); track col.name) {
-                      <option [value]="col.name" [selected]="settingsOf(name).sumField === col.name">{{ col.caption }}</option>
-                    }
-                  </select>
+                @if (totalOwner(name); as owner) {
+                  <p class="hp-kp-hint">One total field per board: {{ captionOf(owner) }} has it. Clear it there to use one here.</p>
+                }
+                <div class="hp-kp-pair">
+                  <label class="hp-kp-field">
+                    <span class="hp-kp-label">Total field</span>
+                    <select (change)="onSumField(name, $event)" [disabled]="!!totalOwner(name)"
+                            [title]="totalOwner(name) ? 'One total field per board: ' + captionOf(totalOwner(name)) + ' has it' : ''">
+                      <option value="" [selected]="!settingsOf(name).sumField">— no total —</option>
+                      @for (col of numericColumns(name); track col.name) {
+                        <option [value]="col.name" [selected]="settingsOf(name).sumField === col.name">{{ col.caption }}</option>
+                      }
+                    </select>
+                  </label>
+                  <label class="hp-kp-field">
+                    <span class="hp-kp-label" title="One column total for the whole board: it applies to every object">Column total (board)</span>
+                    <select (change)="onTotalMode($event)">
+                      @for (m of totalModes; track m[0]) {
+                        <option [value]="m[0]" [selected]="totalMode() === m[0]">{{ m[1] }}</option>
+                      }
+                    </select>
+                  </label>
+                </div>
+                <div class="hp-kp-field">
+                  <span class="hp-kp-label">Preview</span>
+                  <div class="hp-kp-preview" aria-label="Card preview">
+                    <div class="hp-kp-preview-title">{{ captionOf(name) }} record</div>
+                    <div class="hp-kp-preview-items">
+                      @for (item of layoutOf(name); track item.field) {
+                        @if (item.style === 'line') {
+                          <div class="hp-kp-preview-line">
+                            @if (iconMask(item.icon); as mask) { <span class="hp-kp-ico" aria-hidden="true" [style.mask-image]="mask" [style.-webkit-mask-image]="mask"></span> }
+                            <span class="hp-kp-preview-label">{{ columnCaption(name, item.field) }}:</span> value
+                          </div>
+                        } @else {
+                          <span class="hp-kp-preview-tag" [class.soon]="item.style === 'due'">
+                            @if (iconMask(item.icon); as mask) { <span class="hp-kp-ico" aria-hidden="true" [style.mask-image]="mask" [style.-webkit-mask-image]="mask"></span> }
+                            {{ item.style === 'due' ? 'Due soon: ' : '' }}{{ columnCaption(name, item.field) }}
+                          </span>
+                        }
+                      }
+                    </div>
+                  </div>
+                </div>
+                <label class="hp-kp-check">
+                  <input type="checkbox" [checked]="!settingsOf(name).locked" (change)="onLocked(name, $event)" />
+                  Cards can be moved (drag and drop, move actions)
                 </label>
                 <div class="hp-kp-sync">
                   <label class="hp-kp-check">
@@ -188,6 +279,11 @@
                         @if (values === 'loading') { <p class="hp-kp-hint">Loading values…</p> }
                         @else if (values === 'error') { <p class="hp-kp-error">The values could not be loaded.</p> }
                         @else {
+                          <div class="hp-kp-create">
+                            <button type="button" (click)="createStages(name)">
+                              Create stages from {{ columnCaption(name, settingsOf(name).statusColumn) }} values</button>
+                            @if (createMessage()[name]; as message) { <span class="hp-kp-hint" role="status">{{ message }}</span> }
+                          </div>
                           <table class="hp-kp-table hp-kp-map">
                             <caption class="hp-kp-sr">Stage to {{ columnCaption(name, settingsOf(name).statusColumn) }} mapping for {{ captionOf(name) }}</caption>
                             <thead>
@@ -298,6 +394,29 @@
               </tbody>
             </table>
           </div>
+        }
+      </section>
+
+      <section class="hp-kp-section" aria-labelledby="hpKpCopy">
+        <h3 id="hpKpCopy" class="hp-kp-title">Copy settings</h3>
+        <p class="hp-kp-hint">Reuse this board's setup on another page: export here, import there. Cards are not copied.</p>
+        <div class="hp-kp-inline">
+          <button type="button" (click)="showExport()" [attr.aria-pressed]="copyMode() === 'export'">Export</button>
+          <button type="button" (click)="showImport()" [attr.aria-pressed]="copyMode() === 'import'">Import</button>
+        </div>
+        @if (copyMode()) {
+          <textarea class="hp-kp-copy" rows="8" [readOnly]="copyMode() === 'export'" [value]="copyText()" (input)="onCopyText($event)"
+                    [attr.aria-label]="copyMode() === 'export' ? 'Settings of this board' : 'Paste settings to import'"
+                    [placeholder]="copyMode() === 'import' ? 'Paste the exported settings here' : ''"></textarea>
+          <div class="hp-kp-inline">
+            @if (copyMode() === 'export') {
+              <button type="button" (click)="copyToClipboard()">Copy</button>
+            } @else {
+              <button type="button" (click)="applyImport()">Apply to this board</button>
+            }
+            <button type="button" (click)="closeCopy()">Close</button>
+          </div>
+          @if (copyMessage()) { <p class="hp-kp-hint" role="status">{{ copyMessage() }}</p> }
         }
       </section>
     </div>

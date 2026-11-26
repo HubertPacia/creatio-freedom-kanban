@@ -23,6 +23,58 @@ export interface Stage {
 export interface CardValue {
 	label: string;
 	text: string;
+	/** A Creatio icon name (ICON_NAMES) or ''. */
+	icon?: string;
+	style?: CardItemStyle;
+}
+
+/**
+ * line: "Label: value" on its own row; tag: a chip with the value; due: the object's due date as a chip that turns
+ * amber when due soon and red when overdue (one per object, date columns only).
+ */
+export type CardItemStyle = 'line' | 'tag' | 'due';
+
+/** One row of an object's card layout. */
+export interface CardItem {
+	field: string;
+	icon: string;
+	style: CardItemStyle;
+}
+
+/**
+ * Freedom UI icons the shell ships as /0/Shell/assets/themes/freedom/icons/<name>.svg (read from Creatio 10.1's own
+ * icon list). shortcut: a fixed list; a name another Creatio version lacks simply draws nothing.
+ */
+export const ICON_NAMES: readonly string[] = [
+	'contact-icon', 'contact-call-center-icon', 'contact-group-icon', 'employee-icon', 'document-new-icon',
+	'document-icon', 'document-edit-icon', 'folder-icon', 'book-open-icon', 'pen', 'coins-icon', 'money-icon',
+	'trolley-icon', 'gift-icon', 'diagram-icon', 'flowchart-icon', 'timeline-icon', 'organizational-structure-icon',
+	'calendar-icon', 'goal-icon', 'message-warning-icon', 'problem-icon', 'home-icon', 'work-icon', 'bag-icon',
+	'mail-icon', 'phone-icon', 'feed-icon', 'flag-icon', 'settings', 'star-icon', 'magnifying-glass-icon', 'tiles-icon',
+	'horn-icon', 'bell-icon', 'clock-icon', 'history-icon', 'info-icon', 'checkbox-icon', 'log-icon', 'lock',
+	'attachments-icon', 'landingi-icon', 'landing-page-icon', 'instapage-icon', 'globe-icon', 'wordpress-icon',
+	'catalog-icon', 'air-balloon-icon', 'circles-icon', 'contact-filter-icon', 'fire-icon', 'level-icon',
+	'subscribe-icon', 'hourglass-icon', 'contact-leads-icon', 'like-icon', 'at-icon', 'reload-icon',
+	'filter-column-icon', 'calculator-icon', 'sum-icon', 'checkmark-icon', 'checkmark-filled-icon', 'close-link',
+	'copilot-action-button-icon', 'gallery', 'catalog', 'send-email-icon', 'confirm-scheduling-icon',
+	'schedule-time-icon', 'translate-icon', 'checkbox-rocket-icon', 'checkbox-arrow-right-icon', 'folder-rocket-icon',
+	'folder-arrow-right-icon', 'warning-filled-icon', 'change-contact-icon', 'scale-camera-icon', 'dashboards-icon',
+	'list-icon', 'cloud-arrow-down-icon', 'cloud-arrow-up-icon', 'document-contact-icon', 'merge-icon',
+	'download-button-icon', 'edit-button-icon', 'flag-button-icon', 'folder-plus-icon', 'folder-button-icon',
+	'expand-icon', 'import-button-icon', 'system-notifications', 'more-vertical-button-icon', 'more-button-icon',
+	'add-button-icon', 'close-button-icon', 'message-warn-button-icon', 'chat-icon', 'tag-icon', 'eraser-icon',
+	'checkmark-lined-icon', 'exclamation-lined-icon', 'exclamation-filled-icon', 'excel-icon', 'folder-search-icon',
+	'warning-icon', 'question-icon', 'lock-button-icon', 'business-contact-icon', 'feeds-icon', 'home-panel-icon',
+	'leads-icon', 'map-with-pin-icon', 'segments-icon', 'door-cross-icon', 'filter-cross-icon',
+];
+const ICON_SET = new Set(ICON_NAMES);
+
+/** URL of a Creatio icon under the site's path (works from /0/Shell and the designer's /0/ClientApp); '' if unknown. */
+export function iconUrl(name: string | undefined, pathname: string): string {
+	if (!name || !ICON_SET.has(name)) {
+		return '';
+	}
+	return `${pathname.split('/0/')[0]}/0/Shell/assets/themes/freedom/icons/${name}.svg`;
 }
 
 export interface Card {
@@ -47,7 +99,13 @@ export interface Card {
 	stale?: boolean;
 	/** Value of the object's status column on the record (lookup Id), when the object has one configured. */
 	statusId?: string | null;
+	/** The record's due date as shown on the card, and how close it is (see dueStateOf). */
+	dueText?: string;
+	dueState?: DueState;
 }
+
+/** overdue: past the due date; soon: due within the board's "due soon" days; ok: later; '': no due date. */
+export type DueState = 'overdue' | 'soon' | 'ok' | '';
 
 /** Per allowed object: which columns its cards show, which one is summed, its colour. */
 export interface ObjectSettings {
@@ -56,6 +114,15 @@ export interface ObjectSettings {
 	color: string;
 	/** Lookup column whose value follows the card's stage ('' = board-own stages only). */
 	statusColumn: string;
+	/** The layout's due row: its column ('' = none) and icon. Derived from `layout`; kept for readers of older boards. */
+	dueField: string;
+	dueIcon: string;
+	/** "Due soon" this many days ahead; absent = the board's dueSoonDays (boards saved before it was per object). */
+	dueSoonDays?: number;
+	/** Cards of this object cannot be moved (no drag and drop, no move actions). */
+	locked: boolean;
+	/** What the card shows, in order (up to MAX_CARD_FIELDS); `fields` is the same list of column names. */
+	layout: CardItem[];
 }
 
 /** Lookup values one stage may stand for, per object. */
@@ -66,7 +133,7 @@ const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type SortMode = 'manual' | 'title' | 'total' | 'newest';
 
-export const MAX_CARD_FIELDS = 4;
+export const MAX_CARD_FIELDS = 8;
 
 /** The only colours a board can use: stored by key, so no free CSS value reaches a style attribute. */
 export const COLORS: Record<string, string> = {
@@ -101,6 +168,8 @@ export interface CardFilter {
 	/** Owner to show: null = any owner, '' = cards without an owner, otherwise the owner's contact id. */
 	ownerId: string | null;
 	staleOnly?: boolean;
+	/** Only cards that are overdue or due soon. */
+	dueOnly?: boolean;
 }
 
 export const MAX_STAGES = 12;
@@ -146,7 +215,7 @@ export function normalizeStages(raw: unknown): Stage[] {
 		}
 		seen.add(id);
 		const stage: Stage = { id: id.slice(0, 50), caption: caption.trim() };
-		if (typeof item === 'object' && typeof item?.color === 'string' && COLORS[item.color]) {
+		if (typeof item === 'object' && typeof item?.color === 'string' && Object.hasOwn(COLORS, item.color)) {
 			stage.color = item.color;
 		}
 		const wip = typeof item === 'object' ? toLimit(item?.wipLimit, 999) : null;
@@ -200,6 +269,9 @@ export function matchesFilter(card: Card, filter: CardFilter): boolean {
 		return false;
 	}
 	if (filter.ownerId !== null && filter.ownerId !== undefined && (card.ownerId ?? '') !== filter.ownerId) {
+		return false;
+	}
+	if (filter.dueOnly && card.dueState !== 'overdue' && card.dueState !== 'soon') {
 		return false;
 	}
 	if (filter.staleOnly && !card.stale) {
@@ -304,17 +376,41 @@ export function normalizeObjectSettings(raw: unknown, entities: string[]): Recor
 	const result: Record<string, ObjectSettings> = {};
 	for (const name of entities) {
 		const item = map[name] && typeof map[name] === 'object' ? map[name] : {};
-		const fields: string[] = [];
-		for (const field of Array.isArray(item.fields) ? item.fields : []) {
-			if (typeof field === 'string' && NAME.test(field) && !fields.includes(field) && fields.length < MAX_CARD_FIELDS) {
-				fields.push(field);
+		// Boards saved before the layout editor have `fields` only: each becomes a plain line without an icon.
+		const rawLayout: unknown[] = Array.isArray(item.layout) ? [...item.layout]
+			: (Array.isArray(item.fields) ? item.fields : []).map((field: unknown) => ({ field }));
+		// Boards saved before the due date became a layout row keep it as a separate dueField: it becomes the last row.
+		const legacyDue = typeof item.dueField === 'string' && NAME.test(item.dueField) ? item.dueField : '';
+		if (legacyDue && !rawLayout.some((e) => (e as Record<string, unknown>)?.['style'] === 'due')) {
+			rawLayout.push({ field: legacyDue, icon: item.dueIcon, style: 'due' });
+		}
+		const layout: CardItem[] = [];
+		for (const entry of rawLayout) {
+			const e = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};
+			const field = e['field'];
+			const existing = layout.find((l) => l.field === field);
+			if (existing && e['style'] === 'due' && !layout.some((l) => l.style === 'due')) {
+				existing.style = 'due'; // the legacy due field was also a plain card field: one row, shown as the due date
+				continue;
+			}
+			if (typeof field === 'string' && NAME.test(field) && !existing && layout.length < MAX_CARD_FIELDS) {
+				const style: CardItemStyle = e['style'] === 'due' && !layout.some((l) => l.style === 'due') ? 'due'
+					: e['style'] === 'tag' || e['style'] === 'due' ? 'tag' : 'line';
+				layout.push({ field, icon: typeof e['icon'] === 'string' && ICON_SET.has(e['icon']) ? e['icon'] : '', style });
 			}
 		}
+		const fields = layout.map((l) => l.field);
+		const due = layout.find((l) => l.style === 'due');
 		result[name] = {
 			fields,
 			sumField: typeof item.sumField === 'string' && NAME.test(item.sumField) ? item.sumField : '',
-			color: typeof item.color === 'string' && COLORS[item.color] ? item.color : '',
+			color: typeof item.color === 'string' && Object.hasOwn(COLORS, item.color) ? item.color : '',
 			statusColumn: typeof item.statusColumn === 'string' && NAME.test(item.statusColumn) ? item.statusColumn : '',
+			dueField: due?.field ?? '',
+			dueIcon: due?.icon ?? '',
+			...(item.dueSoonDays === undefined || item.dueSoonDays === null ? {} : { dueSoonDays: normalizeDueSoonDays(item.dueSoonDays) }),
+			locked: item.locked === true,
+			layout,
 		};
 	}
 	return result;
@@ -397,6 +493,96 @@ export function toNumber(value: unknown): number | null {
 }
 
 /** Sum of the cards' totals, or null when none of them has one (the header then shows the count only). */
+export type TotalMode = 'sum' | 'avg' | 'min' | 'max';
+
+export const TOTAL_MODES: Record<TotalMode, string> = { sum: 'Sum', avg: 'Average', min: 'Minimum', max: 'Maximum' };
+
+export function normalizeTotalMode(raw: unknown): TotalMode {
+	return typeof raw === 'string' && Object.hasOwn(TOTAL_MODES, raw) ? raw as TotalMode : 'sum';
+}
+
+/** The column total in the chosen mode over the cards that have a value; null when none has. */
+export function totalOf(cards: Card[], mode: TotalMode): number | null {
+	const values = cards.map((c) => c.sum).filter((v): v is number => typeof v === 'number');
+	if (!values.length) {
+		return null;
+	}
+	const raw = mode === 'avg' ? values.reduce((a, b) => a + b, 0) / values.length
+		: mode === 'min' ? Math.min(...values) : mode === 'max' ? Math.max(...values) : values.reduce((a, b) => a + b, 0);
+	return Math.round(raw * 100) / 100;
+}
+
+/**
+ * How close a due date is. A date-only value is due at the end of that day; `soonDays` 0 = never "soon".
+ */
+export function dueStateOf(value: unknown, dateOnly: boolean, now: number, soonDays: number): DueState {
+	const date = value instanceof Date ? new Date(value.getTime()) : typeof value === 'string' && value ? new Date(value) : null;
+	if (!date || Number.isNaN(date.getTime())) {
+		return '';
+	}
+	if (dateOnly) {
+		date.setHours(23, 59, 59, 999);
+	}
+	const left = date.getTime() - now;
+	return left < 0 ? 'overdue' : left <= soonDays * 86400000 ? 'soon' : 'ok';
+}
+
+/** 0-365 days, default 3. */
+export function normalizeDueSoonDays(raw: unknown): number {
+	return toLimit(raw, 365) ?? 3;
+}
+
+/** The palette colour closest to a hex colour (lookup values such as ActivityStatus.Color); '' for anything else. */
+export function nearestColor(hex: unknown): string {
+	const rgb = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+	if (typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex.trim())) {
+		return '';
+	}
+	const [r, g, b] = rgb(hex.trim());
+	let best = '';
+	let bestDistance = Infinity;
+	for (const [key, value] of Object.entries(COLORS)) {
+		const [r2, g2, b2] = rgb(value);
+		const distance = (r - r2) ** 2 + (g - g2) ** 2 + (b - b2) ** 2;
+		if (distance < bestDistance) {
+			best = key;
+			bestDistance = distance;
+		}
+	}
+	return best;
+}
+
+/**
+ * Stages for the values of an object's field that no stage maps yet, appended in the given order (one value each,
+ * colour from the value when it has one). Stops at MAX_STAGES; `skipped` counts the values left out.
+ */
+export function stagesFromValues(stages: Stage[], entityName: string,
+	values: Array<{ id: string; caption: string; color?: string }>): { stages: Stage[]; added: number; skipped: number } {
+	const mapped = new Set(stages.flatMap((s) => s.statusValues?.[entityName] ?? []));
+	const result = [...stages];
+	let added = 0;
+	let skipped = 0;
+	for (const value of values) {
+		const id = value.id.toLowerCase();
+		if (mapped.has(id)) {
+			continue;
+		}
+		if (result.length >= MAX_STAGES) {
+			skipped++;
+			continue;
+		}
+		const stage: Stage = { id: newStageId(), caption: value.caption.slice(0, 100), statusValues: { [entityName]: [id] } };
+		const color = nearestColor(value.color);
+		if (color) {
+			stage.color = color;
+		}
+		result.push(stage);
+		mapped.add(id);
+		added++;
+	}
+	return { stages: result, added, skipped };
+}
+
 export function sumCards(cards: Card[]): number | null {
 	let total: number | null = null;
 	for (const card of cards) {
@@ -698,12 +884,13 @@ export interface StoredFilters {
 	entityName: string;
 	owner: OwnerChoice;
 	staleOnly: boolean;
+	dueOnly: boolean;
 	sortMode: SortMode;
 }
 
 /** Filters read back from storage: anything malformed falls back to "no filter". */
 export function parseStoredFilters(raw: string | null): StoredFilters {
-	const empty: StoredFilters = { text: '', entityName: '', owner: 'any', staleOnly: false, sortMode: 'manual' };
+	const empty: StoredFilters = { text: '', entityName: '', owner: 'any', staleOnly: false, dueOnly: false, sortMode: 'manual' };
 	if (!raw) {
 		return empty;
 	}
@@ -718,6 +905,7 @@ export function parseStoredFilters(raw: string | null): StoredFilters {
 			// `mine` is the boolean saved before the owner filter became a list.
 			owner: isOwnerChoice(v.owner) ? v.owner : v.mine === true ? 'me' : 'any',
 			staleOnly: v.staleOnly === true,
+			dueOnly: v.dueOnly === true,
 			sortMode: isSortMode(v.sortMode) ? v.sortMode : 'manual',
 		};
 	} catch {
@@ -726,7 +914,7 @@ export function parseStoredFilters(raw: string | null): StoredFilters {
 }
 
 export function hasActiveFilter(f: StoredFilters): boolean {
-	return !!f.text.trim() || !!f.entityName || f.owner !== 'any' || f.staleOnly || f.sortMode !== 'manual';
+	return !!f.text.trim() || !!f.entityName || f.owner !== 'any' || f.staleOnly || f.dueOnly || f.sortMode !== 'manual';
 }
 
 export interface OwnerOption {
@@ -755,10 +943,15 @@ export interface FilterToggles {
 	object: boolean;
 	owner: boolean;
 	stale: boolean;
+	due: boolean;
 	sort: boolean;
+	/** Toolbar actions next to the filters: switched off like them. */
+	compact: boolean;
+	refresh: boolean;
+	addCard: boolean;
 }
 
-export const FILTER_KEYS: Array<keyof FilterToggles> = ['search', 'object', 'owner', 'stale', 'sort'];
+export const FILTER_KEYS: Array<keyof FilterToggles> = ['search', 'object', 'owner', 'stale', 'due', 'sort', 'compact', 'refresh', 'addCard'];
 
 /** Every filter on unless explicitly false; anything malformed shows all. */
 export function normalizeFilterToggles(raw: unknown): FilterToggles {
@@ -777,6 +970,7 @@ export function applyToggles(f: StoredFilters, t: FilterToggles): StoredFilters 
 		entityName: t.object ? f.entityName : '',
 		owner: t.owner ? f.owner : 'any',
 		staleOnly: t.stale ? f.staleOnly : false,
+		dueOnly: t.due ? f.dueOnly : false,
 		sortMode: t.sort ? f.sortMode : 'manual',
 	};
 }

@@ -2,7 +2,7 @@
   "Name": "hpKanban",
   "Description": "Kanban board widget for Creatio Freedom UI.",
   "Maintainer": "Hubert Pacia",
-  "Version": "1.0.1",
+  "Version": "1.0.2",
   "MarketplaceLink": "",
   "DependsOn": [],
   "Code": "hpKanban",

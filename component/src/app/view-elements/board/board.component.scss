@@ -183,6 +183,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .remove { line-height: 1; font-size: 16px; }
 .remove[aria-disabled="true"] { opacity: 0.35; cursor: not-allowed; }
 .card-top .card-title { flex: 1; }
+/* Same 8px inset as the lines and the chips' contents: title, icons and item text start in one column. */
+.card-top { padding-left: 8px; }
 
 .card-menu { position: relative; }
 .menu-toggle { line-height: 1; font-size: 16px; padding: 0 4px; }
@@ -335,3 +337,27 @@ button.column-title:hover { text-decoration: underline; }
 .history-table td.when { white-space: nowrap; color: var(--crt-neutral-600, #666); }
 
 .column-body::-webkit-scrollbar { display: none; }
+
+/* Due date: amber when due soon, red when overdue (text + colour, not colour alone). */
+.due { align-self: flex-start; font-size: 12px; padding: 1px 8px; border-radius: 10px; background: var(--crt-neutral-100, #eef1f6); color: var(--crt-neutral-700, #4d4d4d); }
+.due.soon { background: #fff4d6; color: #7a5200; }
+.due.overdue { background: #fdecea; color: #a4200f; font-weight: 600; }
+button[aria-pressed="true"] { background: var(--crt-neutral-100, #eef1f6); }
+
+/* Creatio icons are SVG files: drawn as a mask, so they take the text colour. */
+.ico { display: inline-block; flex: 0 0 auto; width: 14px; height: 14px; vertical-align: -2px; background: currentColor;
+  mask: center / contain no-repeat; -webkit-mask: center / contain no-repeat; }
+.card-values .ico { color: var(--crt-neutral-600, #666); margin-top: 1px; }
+.card-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 1px 8px; border-radius: 10px; font-size: 12px;
+  background: var(--crt-neutral-100, #eef1f6); color: var(--crt-neutral-700, #4d4d4d); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.due { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Card items in layout order: a line takes the full width, tags and the due date flow side by side. */
+.card-items { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; min-width: 0; }
+/* Lines get the chips' padding and gap, so every icon (line, tag, due) sits in the same column. */
+.card-items .line { flex: 0 0 100%; display: flex; align-items: center; gap: 4px; padding: 1px 8px; min-width: 0; }
+.card-items .line .ico { color: var(--crt-neutral-600, #666); }
+.card-items .lbl { flex: 0 0 auto; max-width: 45%; color: var(--crt-neutral-600, #666); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-items .val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-items .due { align-self: auto; }

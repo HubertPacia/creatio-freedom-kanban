@@ -11,7 +11,7 @@ import {
 	moveCard, nextPosition, normalizeEntities, normalizeObjectSettings, normalizeStages, ObjectSettings, sortCards, SortMode,
 	Stage, sumCards, toNumber, toSortableDate, VALUE_TYPES, daysInStage, formatAge, markStale, wipState, WipState,
 	lookupId, missingRequired, reconcileStages, autoAddTargets, autoAddValues, cardIdFor, POSITION_STEP, stageForStatus, stableId,
-	statusToWrite,
+	statusToWrite, totalOf, normalizeTotalMode, TotalMode, dueStateOf, normalizeDueSoonDays, iconUrl,
 	hasActiveFilter, Lane, laneKey, lanesOf, normalizeRefresh, normalizeSwimlanes, parseStoredFilters, StoredFilters,
 	SwimlaneMode, formatShortDateTime, applyToggles, FilterToggles, hasUnowned, normalizeFilterToggles, OwnerChoice, OwnerOption, ownerOptions,
 } from '../../board-logic';
@@ -28,9 +28,12 @@ const BULK_LIMIT = 100;
 /** DataService answers a refused write (rights, business rule, required column, duplicate key) with success: false
  * instead of an error, and sdk.Model passes that on: turn it into an exception so callers roll back. */
 function saved<T>(result: T): T {
-	const r = result as { success?: boolean; responseStatus?: { Message?: string }; errorInfo?: { message?: string } } | null;
+	const r = result as { success?: boolean; responseStatus?: { Message?: string }; errorInfo?: unknown } | null;
 	if (r?.success === false) {
-		throw new Error(r.responseStatus?.Message || r.errorInfo?.message || 'The change was not saved.');
+		// sdk.Model gives the platform's message as `errorInfo` text (DataSourceSaveResult); raw DataService as responseStatus.
+		const info = r.errorInfo as { message?: unknown } | string | undefined;
+		const text = typeof info === 'string' ? info : typeof info?.message === 'string' ? info.message : r.responseStatus?.Message;
+		throw new Error(text || '');
 	}
 	return result;
 }
@@ -46,6 +49,7 @@ const PARALLEL = 6;
 /** Cards rendered per column (or lane cell) before "Show more". */
 const SHOW_STEP = 50;
 const LOAD_ERROR = 'Cannot load the board.';
+const TOTAL_LABELS: Record<TotalMode, string> = { sum: 'Σ', avg: 'avg', min: 'min', max: 'max' };
 /** shortcut: auto-add creates at most this many cards per load (sequential inserts), the rest come with the next loads. */
 const AUTO_LIMIT = 100;
 
@@ -144,6 +148,14 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 	@Input() @CrtInput()
 	objectSettings: unknown = {};
 
+	/** Column total: 'sum' | 'avg' | 'min' | 'max' of the objects' total fields. */
+	@Input() @CrtInput()
+	totalMode: unknown = 'sum';
+
+	/** A card is "due soon" this many days before its due date (0 = only overdue is flagged). */
+	@Input() @CrtInput()
+	dueSoonDays: unknown = 3;
+
 	/** Optional page binding; the element opens records itself through crt.UpdateRecordRequest. */
 	@Output() @CrtOutput()
 	openRecord = new EventEmitter<{ entityName: string; recordId: string }>();
@@ -182,6 +194,8 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 	addBulkRunning = false;
 	/** The record an error is about (shows an "Open record" button next to the message). */
 	errorRecord: { entityName: string; recordId: string } | null = null;
+	/** Title-only cards; remembered per board in this browser. */
+	compact = false;
 	/** Card whose ⋯ menu is open, and where the menu is drawn (fixed: no column can clip it). */
 	menuCardId: string | null = null;
 	menuPos: { top: number; left: number } | null = null;
@@ -260,7 +274,7 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 	}
 
 	async clearFilters(): Promise<void> {
-		await this._setFilters({ text: '', entityName: '', owner: 'any', staleOnly: false, sortMode: 'manual' });
+		await this._setFilters({ text: '', entityName: '', owner: 'any', staleOnly: false, dueOnly: false, sortMode: 'manual' });
 		this._saveFilters();
 		this._render();
 	}
@@ -298,7 +312,7 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 		}
 		this.ownerChoice = f.owner;
 		this.sortMode = f.sortMode;
-		this.filter = { text: f.text, entityName: f.entityName, ownerId, staleOnly: f.staleOnly };
+		this.filter = { text: f.text, entityName: f.entityName, ownerId, staleOnly: f.staleOnly, dueOnly: f.dueOnly };
 	}
 
 	// shortcut: polling with a full quiet reload; a server push (MessageChannelService) needs a C# listener - upgrade
@@ -339,6 +353,7 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 			entityName: this.filter.entityName,
 			owner: this.ownerChoice,
 			staleOnly: !!this.filter.staleOnly,
+			dueOnly: !!this.filter.dueOnly,
 			sortMode: this.sortMode,
 		};
 	}
@@ -395,10 +410,54 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 		return sortCards((this.columns.get(stageId) ?? []).filter((c) => matchesFilter(c, this.filter)), this.sortMode);
 	}
 
-	/** "Σ 1,234" over the visible cards of the column, or '' when no card there has a total. */
+	/** "Σ 1,234" (or "avg / min / max …") over the visible cards of the column; '' when no card there has a total. */
 	columnTotal(stageId: string): string {
-		const total = sumCards(this.visible(stageId));
-		return total === null ? '' : formatTotal(total);
+		const mode = normalizeTotalMode(this.totalMode);
+		const total = totalOf(this.visible(stageId), mode);
+		return total === null ? '' : `${TOTAL_LABELS[mode]} ${formatTotal(total)}`;
+	}
+
+	/** CSS mask of a Creatio icon (drawn in the text colour); null when the card item has none. */
+	iconMask(name: string | undefined): string | null {
+		const url = iconUrl(name, location.pathname);
+		return url ? `url("${url}")` : null;
+	}
+
+	/** The card's items in layout order; compact cards keep only a due date that needs attention. */
+	shownItems(card: Card): CardValue[] {
+		const values = card.values ?? [];
+		return this.compact
+			? values.filter((v) => v.style === 'due' && (card.dueState === 'overdue' || card.dueState === 'soon'))
+			: values;
+	}
+
+	/** The due filter only makes sense when an object on the board has a due date field. */
+	hasDueField(): boolean {
+		return Object.values(this.settings).some((o) => !!o.dueField);
+	}
+
+	onDueOnly(event: Event): void {
+		this.filter = { ...this.filter, dueOnly: (event.target as HTMLInputElement).checked };
+		this._saveFilters();
+		this._render();
+	}
+
+	toggleCompact(): void {
+		this.compact = !this.compact;
+		try {
+			if (this.compact) {
+				localStorage.setItem(this._compactKey(), '1');
+			} else {
+				localStorage.removeItem(this._compactKey());
+			}
+		} catch {
+			// Storage blocked: compact mode works for this page view only.
+		}
+		this._render();
+	}
+
+	private _compactKey(): string {
+		return `hpKanban.compact.${this.boardCode}`;
 	}
 
 	wip(stage: Stage): WipState {
@@ -507,6 +566,11 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 			this.columns = groupByStage(cards, stageList);
 			this.cardCount = cards.length;
 			this._restoreCollapsed();
+			try {
+				this.compact = this.toggles.compact && localStorage.getItem(this._compactKey()) === '1';
+			} catch {
+				this.compact = false;
+			}
 			if (!infos.some((i) => i.name === this.filter.entityName)) {
 				this.filter = { ...this.filter, entityName: '' };
 			}
@@ -617,6 +681,11 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 
 	isSaving(card: Card): boolean {
 		return this._saving.has(card.id);
+	}
+
+	/** Its object's cards may not be moved (setting per object). */
+	isLocked(card: Card): boolean {
+		return !!this.settings[card.entityName]?.locked;
 	}
 
 	/**
@@ -742,6 +811,9 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 		}
 		const all = [...this.columns.values()].flat();
 		const moving = all.find((c) => c.id === cardId);
+		if (moving && this.isLocked(moving)) {
+			return; // a dropped or keyboard-moved card of a locked object stays where it is
+		}
 		const fromCode = moving?.stageCode ?? '';
 		// What a refusal must restore: stage and position before the move (a renumbered column included).
 		const snapshot = new Map(all.map((c) => [c.id, { stageCode: c.stageCode, position: c.position }]));
@@ -854,7 +926,9 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 			} catch (e) {
 				console.error('hp-kanban-board: the record rejected the status change', e);
 				const reason = this._errorText(e);
-				return `The record was not updated${reason ? ': ' + reason : '.'}`;
+				const field = info?.columns.get(column)?.caption ?? column;
+				return `"${stage?.caption ?? stageId}" changes ${field}, and Creatio refused it: `
+					+ (reason || `no reason was given (check your edit rights and the rules of ${info?.caption ?? entityName}).`);
 			}
 		}
 		return null;
@@ -906,7 +980,8 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 	private _errorText(e: unknown): string {
 		const any = e as { message?: unknown; error?: { message?: unknown }; errorInfo?: { message?: unknown } } | null;
 		const text = any?.errorInfo?.message ?? any?.error?.message ?? any?.message;
-		return typeof text === 'string' ? text.slice(0, 300) : '';
+		// The first paragraph is the reason; database errors add a technical DETAIL block after a blank line.
+		return typeof text === 'string' ? text.split(/\r?\n\s*\r?\n/)[0].trim().slice(0, 300) : '';
 	}
 
 	// ---- history -------------------------------------------------------------------------------------------
@@ -1324,16 +1399,21 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 		filters.addSchemaColumnInFilterWithParameters(ComparisonType.Equal, 'Id', rows.map((r) => r.hpRecordId));
 		const settings = allSettings[info.name];
 		// Only columns the object still has: a renamed or removed column in the settings is skipped, never an error.
-		const fields = (settings?.fields ?? []).filter((f) => {
-			const column = info.columns.get(f);
+		const layout = (settings?.layout ?? []).filter((item) => {
+			const column = info.columns.get(item.field);
 			return !!column && !VALUE_TYPES.hidden.has(column.dataValueType);
 		});
+		const fields = layout.map((item) => item.field);
 		const sumColumn = settings?.sumField && VALUE_TYPES.numeric.has(info.columns.get(settings.sumField)?.dataValueType ?? -1)
 			? settings.sumField : '';
 		const statusColumn = settings?.statusColumn && info.columns.get(settings.statusColumn)?.dataValueType === VALUE_TYPES.lookup
 			? settings.statusColumn : '';
+		const dueType = settings?.dueField ? info.columns.get(settings.dueField)?.dataValueType : undefined;
+		const dueColumn = dueType === VALUE_TYPES.date || dueType === VALUE_TYPES.dateTime ? settings!.dueField : '';
+		const now = Date.now();
+		const soonDays = settings?.dueSoonDays ?? normalizeDueSoonDays(this.dueSoonDays);
 		const attributes = ['Id', info.displayColumn, ...(info.hasOwner ? ['Owner'] : []), ...fields,
-			...(sumColumn ? [sumColumn] : []), ...(statusColumn ? [statusColumn] : [])];
+			...(sumColumn ? [sumColumn] : []), ...(statusColumn ? [statusColumn] : []), ...(dueColumn ? [dueColumn] : [])];
 		const records = await model.load({
 			attributes: [...new Set(attributes)],
 			parameters: [{ type: ModelParameterType.Filter, value: filters }],
@@ -1356,16 +1436,20 @@ export class HpKanbanBoardComponent implements OnChanges, OnDestroy {
 				title: this._text(record[info.displayColumn]) || '(no name)',
 				ownerId: owner?.value ?? null,
 				ownerName: owner?.displayValue ?? '',
-				values: fields
-					.map((f): CardValue => ({
-						label: info.columns.get(f)!.caption,
-						text: formatValue(record[f], info.columns.get(f)!.dataValueType),
+				values: layout
+					.map((item): CardValue => ({
+						label: info.columns.get(item.field)!.caption,
+						text: formatValue(record[item.field], info.columns.get(item.field)!.dataValueType),
+						icon: item.icon,
+						style: item.style,
 					}))
 					.filter((v) => v.text),
 				sum: sumColumn ? toNumber(record[sumColumn]) : null,
 				addedOn: toSortableDate(row.CreatedOn),
 				stageSince: toSortableDate(row.hpStageChangedOn) || toSortableDate(row.CreatedOn),
 				statusId: statusColumn ? lookupId(record[statusColumn]) : null,
+				dueText: dueColumn ? formatValue(record[dueColumn], dueType!) : '',
+				dueState: dueColumn ? dueStateOf(record[dueColumn], dueType === VALUE_TYPES.date, now, soonDays) : '',
 			});
 		}
 		return cards;

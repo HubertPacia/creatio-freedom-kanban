@@ -41,11 +41,25 @@
             Stale only
           </label>
         }
+        @if (toggles.due && hasDueField()) {
+          <label class="mine">
+            <input type="checkbox" [checked]="!!filter.dueOnly" (change)="onDueOnly($event)" />
+            Due soon / overdue
+          </label>
+        }
+        @if (toggles.compact) {
+          <button type="button" class="ghost small" (click)="toggleCompact()" [attr.aria-pressed]="compact"
+                  title="Show titles only">Compact</button>
+        }
         @if (filtersActive()) {
           <button type="button" class="ghost small" (click)="clearFilters()">Clear filters</button>
         }
-        <button type="button" class="ghost" (click)="reload()" [disabled]="loading" aria-label="Refresh board">&#x21bb;</button>
-        <button type="button" class="primary" (click)="openAdd()" [disabled]="!entityInfos.length">+ Add card</button>
+        @if (toggles.refresh) {
+          <button type="button" class="ghost" (click)="reload()" [disabled]="loading" aria-label="Refresh board">&#x21bb;</button>
+        }
+        @if (toggles.addCard) {
+          <button type="button" class="primary" (click)="openAdd()" [disabled]="!entityInfos.length">+ Add card</button>
+        }
       </div>
     }
   </header>
@@ -124,7 +138,7 @@
             [attr.aria-label]="'Collapse ' + stage.caption" title="Collapse">{{ stage.caption }}</button>
     <span class="column-stats">
       @if (columnTotal(stage.id); as total) {
-        <span class="total" [attr.aria-label]="'Total ' + total">&Sigma; {{ total }}</span>
+        <span class="total" [attr.aria-label]="'Total ' + total">{{ total }}</span>
       }
       @if (stage.wipLimit) {
         <span class="count wip" [class.over]="wip(stage) === 'over'" [class.full]="wip(stage) === 'full'"
@@ -133,7 +147,7 @@
       } @else {
         <span class="count" [attr.aria-label]="visible(stage.id).length + ' cards'">{{ visible(stage.id).length }}</span>
       }
-      @if (entityInfos.length) {
+      @if (entityInfos.length && toggles.addCard) {
         <button type="button" class="ghost small column-add" (click)="openAdd(stage.id)"
                 [attr.aria-label]="'Add card to ' + stage.caption" [title]="'Add card to ' + stage.caption">+</button>
       }
@@ -151,7 +165,7 @@
   </ng-template>
 
   <ng-template #cardTpl let-card let-stage="stage" let-first="first" let-last="last">
-    <article class="card" role="listitem" [attr.draggable]="!isSaving(card)" [class.dragging]="draggedId === card.id"
+    <article class="card" role="listitem" [attr.draggable]="!isSaving(card) && !isLocked(card)" [class.dragging]="draggedId === card.id"
              [class.drop-before]="dropBeforeId === card.id"
              [class.saving]="isSaving(card)" [attr.aria-busy]="isSaving(card)"
              [class.stale]="card.stale"
@@ -167,6 +181,7 @@
             <div class="menu" role="menu" [attr.aria-label]="'Actions for ' + card.title"
                  [style.top.px]="menuPos?.top" [style.left.px]="menuPos?.left" [style.visibility]="menuPos ? null : 'hidden'"
                  (click)="$event.stopPropagation()" (keydown)="onMenuKey($event)">
+              @if (!isLocked(card)) {
               @if (neighbour(stage.id, -1); as prev) {
                 <button type="button" role="menuitem" [disabled]="isSaving(card)"
                         (click)="menuAction($event, step.bind(this, card, stage.id, -1))">&larr; Move to {{ prev.caption }}</button>
@@ -180,6 +195,7 @@
                         (click)="menuAction($event, shift.bind(this, card, stage.id, -1))">&uarr; Move up</button>
                 <button type="button" role="menuitem" [disabled]="last || isSaving(card)"
                         (click)="menuAction($event, shift.bind(this, card, stage.id, 1))">&darr; Move down</button>
+              }
               }
               <button type="button" role="menuitem" (click)="menuAction($event, scrollToBottom.bind(this, scrollBoxOf($event)))">&#x2913; Scroll to bottom</button>
               <button type="button" role="menuitem" (click)="menuAction($event, toggleHistory.bind(this, card))">
@@ -195,18 +211,37 @@
                   [attr.aria-label]="'Remove ' + card.title + ' from the board'" title="Remove from board">&times;</button>
         }
       </div>
-      @if (card.values?.length) {
-        <dl class="card-values">
-          @for (v of card.values; track v.label) {
-            <div><dt>{{ v.label }}</dt><dd>{{ v.text }}</dd></div>
-          }
-        </dl>
+      @if (shownItems(card); as items) {
+        @if (items.length) {
+          <div class="card-items">
+            @for (v of items; track v.label) {
+              @if (v.style === 'line') {
+                <div class="line">
+                  @if (iconMask(v.icon); as mask) { <span class="ico" aria-hidden="true" [style.mask-image]="mask" [style.-webkit-mask-image]="mask"></span> }
+                  <span class="lbl">{{ v.label }}:</span> <span class="val">{{ v.text }}</span>
+                </div>
+              } @else if (v.style === 'due') {
+                <span class="due" [class.overdue]="card.dueState === 'overdue'" [class.soon]="card.dueState === 'soon'" [title]="v.label">
+                  @if (iconMask(v.icon); as mask) { <span class="ico" aria-hidden="true" [style.mask-image]="mask" [style.-webkit-mask-image]="mask"></span> }
+                  {{ card.dueState === 'overdue' ? 'Overdue' : card.dueState === 'soon' ? 'Due soon' : 'Due' }}: {{ v.text }}
+                </span>
+              } @else {
+                <span class="tag" [title]="v.label + ': ' + v.text">
+                  @if (iconMask(v.icon); as mask) { <span class="ico" aria-hidden="true" [style.mask-image]="mask" [style.-webkit-mask-image]="mask"></span> }
+                  <span class="sr-only">{{ v.label }}: </span>{{ v.text }}
+                </span>
+              }
+            }
+          </div>
+        }
       }
+      @if (!compact) {
       <div class="card-meta">
         <span class="chip">{{ entityCaption(card.entityName) }}</span>
         <span class="age" [title]="'In this stage since ' + (card.stageSince || '?')">{{ age(card) }} in stage</span>
         @if (card.stale) { <span class="stale-label">stale</span> }
       </div>
+      }
       @if (historyOf(card); as h) {
         <div class="history" aria-live="polite">
           @if (h === 'loading') { Loading… }

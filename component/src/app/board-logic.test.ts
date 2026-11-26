@@ -7,6 +7,8 @@ import {
 	lanesOf, laneKey, normalizeSwimlanes, normalizeRefresh, parseStoredFilters, hasActiveFilter, NO_OWNER,
 	ownerOptions, hasUnowned, normalizeFilterToggles, applyToggles, formatShortDateTime,
 	autoAddValues, autoAddTargets, cardIdFor, stableId, statusToWrite,
+	totalOf, normalizeTotalMode, dueStateOf, normalizeDueSoonDays, nearestColor, stagesFromValues,
+	MAX_CARD_FIELDS, ICON_NAMES, iconUrl,
 } from './board-logic.ts';
 import type { Card } from './board-logic.ts';
 
@@ -94,11 +96,13 @@ const settings = normalizeObjectSettings({
 	Activity: { sumField: 'x;y', color: '#fff' },
 }, ['Account', 'Activity', 'Case']);
 assert.deepEqual(Object.keys(settings), ['Account', 'Activity', 'Case'], 'only allowed objects, all present');
-assert.deepEqual(settings['Account'], { fields: ['Owner', 'Web', 'Phone', 'Type'], sumField: 'AnnualRevenue', color: 'teal', statusColumn: '' });
-assert.deepEqual(settings['Activity'], { fields: [], sumField: '', color: '', statusColumn: '' });
-assert.deepEqual(settings['Case'], { fields: [], sumField: '', color: '', statusColumn: '' });
+const line = (field: string) => ({ field, icon: '', style: 'line' });
+assert.deepEqual(settings['Account'], { fields: ['Owner', 'Web', 'Phone', 'Type', 'Extra'], sumField: 'AnnualRevenue', color: 'teal',
+	statusColumn: '', dueField: '', dueIcon: '', locked: false, layout: ['Owner', 'Web', 'Phone', 'Type', 'Extra'].map(line) }, 'old `fields` become plain lines');
+assert.deepEqual(settings['Activity'], { fields: [], sumField: '', color: '', statusColumn: '', dueField: '', dueIcon: '', locked: false, layout: [] });
+assert.deepEqual(settings['Case'], { fields: [], sumField: '', color: '', statusColumn: '', dueField: '', dueIcon: '', locked: false, layout: [] });
 assert.deepEqual(normalizeObjectSettings('{"Account":{"color":"red"}}', ['Account'])['Account'].color, 'red');
-assert.deepEqual(normalizeObjectSettings('nope', ['Account'])['Account'], { fields: [], sumField: '', color: '', statusColumn: '' });
+assert.deepEqual(normalizeObjectSettings('nope', ['Account'])['Account'], { fields: [], sumField: '', color: '', statusColumn: '', dueField: '', dueIcon: '', locked: false, layout: [] });
 assert.equal(normalizeObjectSettings({ Activity: { statusColumn: 'Status' } }, ['Activity'])['Activity'].statusColumn, 'Status');
 assert.equal(normalizeObjectSettings({ Activity: { statusColumn: 'bad name' } }, ['Activity'])['Activity'].statusColumn, '');
 assert.deepEqual(normalizeObjectSettings(['x'], ['Account'])['Account'].fields, []);
@@ -283,9 +287,9 @@ assert.equal(normalizeRefresh(601), 30);
 assert.equal(normalizeRefresh(2.5), 30);
 
 // stored filters
-assert.deepEqual(parseStoredFilters(null), { text: '', entityName: '', owner: 'any', staleOnly: false, sortMode: 'manual' });
+assert.deepEqual(parseStoredFilters(null), { text: '', entityName: '', owner: 'any', staleOnly: false, dueOnly: false, sortMode: 'manual' });
 assert.deepEqual(parseStoredFilters('{"text":"Call","entityName":"Activity","mine":true,"staleOnly":"yes","sortMode":"total"}'),
-	{ text: 'Call', entityName: 'Activity', owner: 'me', staleOnly: false, sortMode: 'total' }, 'old "mine" becomes "me"');
+	{ text: 'Call', entityName: 'Activity', owner: 'me', staleOnly: false, dueOnly: false, sortMode: 'total' }, 'old "mine" becomes "me"');
 assert.equal(parseStoredFilters('{"owner":"none"}').owner, 'none');
 assert.equal(parseStoredFilters('{"owner":"410006E1-CA4E-4502-A9EC-E54D922D2C00"}').owner, '410006E1-CA4E-4502-A9EC-E54D922D2C00');
 assert.equal(parseStoredFilters('{"owner":"<script>"}').owner, 'any');
@@ -305,12 +309,13 @@ assert.ok(!hasUnowned([laneCards[0]]));
 assert.deepEqual(ownerOptions([]), []);
 
 // filter toggles
-assert.deepEqual(normalizeFilterToggles(undefined), { search: true, object: true, owner: true, stale: true, sort: true });
-assert.deepEqual(normalizeFilterToggles({ owner: false, stale: 'no', sort: false }), { search: true, object: true, owner: false, stale: true, sort: false });
+assert.deepEqual(normalizeFilterToggles(undefined), { search: true, object: true, owner: true, stale: true, due: true, sort: true, compact: true, refresh: true, addCard: true });
+assert.deepEqual(normalizeFilterToggles({ owner: false, stale: 'no', sort: false, addCard: false }),
+	{ search: true, object: true, owner: false, stale: true, due: true, sort: false, compact: true, refresh: true, addCard: false });
 assert.deepEqual(normalizeFilterToggles(['x']).search, true);
-const storedAll = { text: 'x', entityName: 'Activity', owner: 'me', staleOnly: true, sortMode: 'title' as const };
-assert.deepEqual(applyToggles(storedAll, { search: false, object: false, owner: false, stale: false, sort: false }),
-	{ text: '', entityName: '', owner: 'any', staleOnly: false, sortMode: 'manual' });
+const storedAll = { text: 'x', entityName: 'Activity', owner: 'me', staleOnly: true, dueOnly: true, sortMode: 'title' as const };
+assert.deepEqual(applyToggles(storedAll, { search: false, object: false, owner: false, stale: false, due: false, sort: false, compact: false, refresh: false, addCard: false }),
+	{ text: '', entityName: '', owner: 'any', staleOnly: false, dueOnly: false, sortMode: 'manual' });
 assert.deepEqual(applyToggles(storedAll, normalizeFilterToggles(undefined)), storedAll);
 
 // history date: dd.mm.yy HH:mm, local time
@@ -344,5 +349,109 @@ assert.equal(cardIdFor('board1', 'Case', 'aa-1'), cid);
 assert.equal(new Set([cid, cardIdFor('board2', 'Case', 'aa-1'), cardIdFor('board1', 'Activity', 'aa-1'), cardIdFor('board1', 'Case', 'aa-2')]).size, 4);
 assert.equal(stableId('a', 'b'), stableId('a', 'b'));
 assert.notEqual(stableId('a', 'b'), stableId('a', 'c'));
+
+// totals: sum / average / min / max over cards with a value; none -> null
+const totalCards = [card('1', 'a', 0, { sum: 10 }), card('2', 'a', 1, { sum: 5 }), card('3', 'a', 2, { sum: null }), card('4', 'a', 3, { sum: 0.333 })];
+assert.equal(totalOf(totalCards, 'sum'), 15.33);
+assert.equal(totalOf(totalCards, 'avg'), 5.11);
+assert.equal(totalOf(totalCards, 'min'), 0.33);
+assert.equal(totalOf(totalCards, 'max'), 10);
+assert.equal(totalOf([card('5', 'a', 0)], 'avg'), null);
+assert.equal(normalizeTotalMode('avg'), 'avg');
+assert.equal(normalizeTotalMode('median'), 'sum');
+assert.equal(normalizeTotalMode('toString'), 'sum', 'not an inherited key');
+
+// due state: overdue / soon / ok; a date-only value is due at the end of its day; soonDays 0 = never soon
+const noon = new Date(2026, 10, 26, 12, 0).getTime();
+assert.equal(dueStateOf(new Date(2026, 10, 26, 11, 0), false, noon, 3), 'overdue');
+assert.equal(dueStateOf(new Date(2026, 10, 26, 0, 0), true, noon, 3), 'soon', 'today, date only: due tonight');
+assert.equal(dueStateOf(new Date(2026, 10, 25, 0, 0), true, noon, 3), 'overdue');
+assert.equal(dueStateOf(new Date(2026, 10, 29, 11, 0), false, noon, 3), 'soon');
+assert.equal(dueStateOf(new Date(2026, 10, 30, 13, 0), false, noon, 3), 'ok');
+assert.equal(dueStateOf(new Date(2026, 10, 27, 12, 0), false, noon, 0), 'ok');
+assert.equal(dueStateOf(new Date(2026, 10, 27, 12, 0).toISOString(), false, noon, 3), 'soon', 'ISO text');
+assert.equal(dueStateOf(null, false, noon, 3), '');
+assert.equal(dueStateOf('nope', false, noon, 3), '');
+assert.equal(normalizeDueSoonDays(undefined), 3);
+assert.equal(normalizeDueSoonDays('7'), 7);
+const dueCards = [card('1', 'a', 0, { dueState: 'overdue' }), card('2', 'a', 1, { dueState: 'soon' }), card('3', 'a', 2, { dueState: 'ok' }), card('4', 'a', 3)];
+assert.deepEqual(dueCards.filter((c) => matchesFilter(c, { text: '', entityName: '', ownerId: null, dueOnly: true })).map((c) => c.id), ['1', '2']);
+assert.equal(parseStoredFilters(JSON.stringify({ dueOnly: true })).dueOnly, true);
+
+// palette keys only: inherited names such as "constructor" are not colours
+assert.equal(normalizeStages([{ id: 'a', caption: 'A', color: 'constructor' }])[0].color, undefined);
+assert.equal(normalizeObjectSettings({ Case: { color: 'toString' } }, ['Case'])['Case'].color, '');
+
+// nearestColor: closest palette key; anything not #rrggbb -> ''
+assert.equal(nearestColor('#0057EE'), 'blue');
+assert.equal(nearestColor('#dd3322'), 'red');
+assert.equal(nearestColor('#888888'), 'grey');
+assert.equal(nearestColor('red'), '');
+assert.equal(nearestColor(undefined), '');
+assert.equal(nearestColor('#12345'), '');
+
+// stagesFromValues: one stage per value no stage maps yet, in the given order, colour from the value, capped at MAX_STAGES
+const base = normalizeStages([{ id: 'x', caption: 'X', statusValues: { Case: [NS] } }, { id: 'y', caption: 'Y' }]);
+const made = stagesFromValues(base, 'Case', [{ id: NS, caption: 'Not started' }, { id: IP, caption: 'In progress', color: '#e0a801' }, { id: DONE, caption: 'Done' }]);
+assert.deepEqual([made.added, made.skipped], [2, 0]);
+assert.deepEqual(made.stages.map((s) => s.caption), ['X', 'Y', 'In progress', 'Done']);
+assert.deepEqual(made.stages[2].statusValues, { Case: [IP] });
+assert.equal(made.stages[2].color, 'yellow');
+assert.equal(made.stages[3].color, undefined);
+assert.equal(new Set(made.stages.map((s) => s.id)).size, 4);
+const many = Array.from({ length: 14 }, (_, i) => ({ id: `00000000-0000-0000-0000-0000000000${String(i).padStart(2, '0')}`, caption: `V${i}` }));
+const capped = stagesFromValues(base, 'Case', many);
+assert.deepEqual([capped.stages.length, capped.added, capped.skipped], [12, 10, 4]);
+assert.equal(stagesFromValues(made.stages, 'Case', [{ id: IP, caption: 'again' }]).added, 0, 'already mapped');
+
+// card layout: icons from the Creatio list only, style line|tag, unique fields, at most 8; layout wins over fields
+const laid = normalizeObjectSettings({ Case: {
+	fields: ['Ignored'],
+	layout: [
+		{ field: 'Owner', icon: 'contact-icon', style: 'tag' },
+		{ field: 'Owner', icon: 'tag-icon' },
+		{ field: 'Number', icon: 'url(x)', style: 'bold' },
+		{ field: 'bad name' },
+		'nope',
+		...Array.from({ length: 10 }, (_, i) => ({ field: `F${i}` })),
+	],
+	dueField: 'Deadline', dueIcon: 'calendar-icon',
+} }, ['Case'])['Case'];
+assert.deepEqual(laid.layout.slice(0, 2), [{ field: 'Owner', icon: 'contact-icon', style: 'tag' }, { field: 'Number', icon: '', style: 'line' }]);
+assert.equal(laid.layout.length, MAX_CARD_FIELDS);
+assert.equal(MAX_CARD_FIELDS, 8);
+assert.deepEqual(laid.fields, laid.layout.map((l) => l.field));
+assert.equal(laid.dueField, '', 'the legacy due row did not fit into 8 rows');
+
+// due as a layout row: one per object (a second "due" becomes a tag), dueField/dueIcon follow it, legacy dueField appended
+const dueRows = normalizeObjectSettings({ Case: { layout: [
+	{ field: 'Owner', style: 'line' }, { field: 'Deadline', icon: 'calendar-icon', style: 'due' }, { field: 'Start', style: 'due' },
+] } }, ['Case'])['Case'];
+assert.deepEqual(dueRows.layout.map((l) => l.style), ['line', 'due', 'tag']);
+assert.deepEqual([dueRows.dueField, dueRows.dueIcon], ['Deadline', 'calendar-icon']);
+const legacy = normalizeObjectSettings({ Case: { layout: [{ field: 'Owner', style: 'line' }], dueField: 'Deadline', dueIcon: 'clock-icon' } }, ['Case'])['Case'];
+assert.deepEqual(legacy.layout, [{ field: 'Owner', icon: '', style: 'line' }, { field: 'Deadline', icon: 'clock-icon', style: 'due' }]);
+assert.equal(legacy.dueField, 'Deadline');
+const input = { Case: { layout: [{ field: 'Owner' }], dueField: 'Deadline' } };
+normalizeObjectSettings(input, ['Case']);
+assert.equal(input.Case.layout.length, 1, 'the settings passed in are not changed');
+const legacyShown = normalizeObjectSettings({ Case: { fields: ['Deadline', 'Owner'], dueField: 'Deadline' } }, ['Case'])['Case'];
+assert.deepEqual(legacyShown.layout.map((l) => [l.field, l.style]), [['Deadline', 'due'], ['Owner', 'line']], 'a due field already on the card is that row');
+assert.equal(normalizeObjectSettings({ Case: { dueField: 'D', dueIcon: 'toString' } }, ['Case'])['Case'].dueIcon, '');
+assert.deepEqual(normalizeObjectSettings({ Case: { fields: ['A'], layout: [] } }, ['Case'])['Case'].layout, [], 'an emptied layout stays empty');
+
+// iconUrl: only listed icons, under the site's path
+assert.equal(iconUrl('tag-icon', '/0/Shell/'), '/0/Shell/assets/themes/freedom/icons/tag-icon.svg');
+assert.equal(iconUrl('tag-icon', '/crm/0/ClientApp/'), '/crm/0/Shell/assets/themes/freedom/icons/tag-icon.svg');
+assert.equal(iconUrl('../../secret', '/0/Shell/'), '');
+assert.equal(iconUrl('', '/0/Shell/'), '');
+assert.equal(ICON_NAMES.length, 117);
+
+// per object: locked (default false), dueSoonDays only when set (else the board's value applies)
+const perObject = normalizeObjectSettings({ Case: { locked: true, dueSoonDays: '7' }, Lead: { locked: 'yes' } }, ['Case', 'Lead']);
+assert.equal(perObject['Case'].locked, true);
+assert.equal(perObject['Case'].dueSoonDays, 7);
+assert.equal(perObject['Lead'].locked, false);
+assert.equal('dueSoonDays' in perObject['Lead'], false);
 
 console.log('board-logic: ok');

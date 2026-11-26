@@ -8,6 +8,7 @@ import {
 	COLORS, MAX_CARD_FIELDS, MAX_REQUIRED_FIELDS, MAX_STAGES, MAX_STATUS_VALUES, newStageId, toLimit, normalizeRefresh, normalizeSwimlanes,
 	SwimlaneMode, normalizeEntities, normalizeObjectSettings, normalizeStages,
 	ObjectSettings, Stage, VALUE_TYPES, FILTER_KEYS, FilterToggles, normalizeFilterToggles,
+	TOTAL_MODES, TotalMode, normalizeTotalMode, normalizeDueSoonDays, stagesFromValues, CardItem, CardItemStyle, ICON_NAMES, iconUrl,
 } from '../../board-logic';
 
 interface EntityOption {
@@ -21,12 +22,24 @@ interface ColumnOption {
 	numeric: boolean;
 	/** Referenced object of a lookup column ('' for other types). */
 	reference: string;
+	/** Date or date/time: can be the card's due date. */
+	date: boolean;
 }
 
 interface LookupOption {
 	id: string;
 	caption: string;
+	/** The value's own colour (a Color column of the lookup, e.g. ActivityStatus), used by "Create stages". */
+	color?: string;
 }
+
+/** A plain CSS length; anything else would end up in a style attribute. */
+const CSS_LENGTH = /^(\d+(\.\d+)?(px|vh|%|rem|em)|calc\([\d\s.+\-*\/%a-z()]+\))$/i;
+/** Lookup columns that hold the values' own order, tried in this order. */
+const ORDER_COLUMNS = ['Position', 'Number', 'Order', 'SortOrder', 'StageNumber'];
+/** Widget properties "Copy settings" exports and imports (never boardCode: every board keeps its own cards). */
+const COPY_KEYS = ['boardTitle', 'height', 'stages', 'entities', 'objectSettings', 'filters', 'swimlanes', 'refreshSeconds',
+	'totalMode', 'dueSoonDays'] as const;
 
 const LOOKUP_LIMIT = 200;
 /** Auto-add counts stop here: the board loads at most 1000 cards anyway. */
@@ -54,7 +67,11 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 	readonly maxStages = MAX_STAGES;
 	readonly colorKeys = Object.keys(COLORS);
 	readonly colors = COLORS;
-	readonly fieldSlots = Array.from({ length: MAX_CARD_FIELDS }, (_, i) => i);
+	readonly maxCardFields = MAX_CARD_FIELDS;
+	readonly iconNames = ICON_NAMES;
+	/** Open icon picker: "<object>|<row index>" or "<object>|due". */
+	protected readonly iconPicker = signal<string | null>(null);
+	protected readonly iconSearch = signal('');
 	protected readonly objectSettings = signal<Record<string, ObjectSettings>>({});
 	/** Columns per object, loaded from the object's schema when the panel opens or the object is added. */
 	protected readonly columnsOf = signal<Record<string, ColumnOption[]>>({});
@@ -70,10 +87,20 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 	protected readonly height = signal('600px');
 	protected readonly swimlanes = signal<SwimlaneMode>('none');
 	protected readonly refreshSeconds = signal(30);
+	protected readonly totalMode = signal<TotalMode>('sum');
+	protected readonly dueSoonDays = signal(3);
+	readonly totalModes = Object.entries(TOTAL_MODES) as Array<[TotalMode, string]>;
+	/** Per object: the result of "Create stages", shown under the button. */
+	protected readonly createMessage = signal<Record<string, string>>({});
+	/** "Copy settings": 'export' shows the JSON, 'import' a box to paste it. */
+	protected readonly copyMode = signal<'' | 'export' | 'import'>('');
+	protected readonly copyText = signal('');
+	protected readonly copyMessage = signal('');
 	protected readonly filterToggles = signal<FilterToggles>(normalizeFilterToggles(undefined));
 	readonly filterKeys = FILTER_KEYS;
 	readonly filterLabels: Record<keyof FilterToggles, string> = {
-		search: 'Search box', object: 'Object type', owner: 'Owner', stale: 'Stale only', sort: 'Sort order',
+		search: 'Search box', object: 'Object type', owner: 'Owner', stale: 'Stale only', due: 'Due soon / overdue', sort: 'Sort order',
+		compact: 'Compact button', refresh: 'Refresh button', addCard: 'Add card buttons',
 	};
 	protected readonly options = signal<EntityOption[]>([]);
 	protected readonly optionsFailed = signal(false);
@@ -143,6 +170,8 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 		this.filterToggles.set(normalizeFilterToggles(await this._constant('filters')));
 		const height = await this._constant('height');
 		this.height.set(typeof height === 'string' && height ? height : '600px');
+		this.totalMode.set(normalizeTotalMode(await this._constant('totalMode')));
+		this.dueSoonDays.set(normalizeDueSoonDays(await this._constant('dueSoonDays')));
 	}
 
 	private async _loadOptions(): Promise<void> {
@@ -179,8 +208,7 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 
 	async onHeight(event: Event): Promise<void> {
 		const value = (event.target as HTMLInputElement).value.trim();
-		// Only a plain CSS length; anything else would end up in a style attribute.
-		if (!/^(\d+(\.\d+)?(px|vh|%|rem|em)|calc\([\d\s.+\-*/%a-z()]+\))$/i.test(value)) {
+		if (!CSS_LENGTH.test(value)) {
 			return;
 		}
 		this.height.set(value);
@@ -377,19 +405,246 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 		return this.columns(name).filter((c) => c.numeric);
 	}
 
-	async onField(name: string, slot: number, event: Event): Promise<void> {
-		const value = (event.target as HTMLSelectElement).value;
-		const fields = [...this.settingsOf(name).fields];
-		if (value) {
-			fields[slot] = value;
-		} else {
-			fields.splice(slot, 1);
+	// ---- card layout --------------------------------------------------------------------------------------
+
+	layoutOf(name: string): CardItem[] {
+		return this.settingsOf(name).layout;
+	}
+
+	/** Columns that can still be added to the card (each field once). */
+	freeColumns(name: string, keep?: string): ColumnOption[] {
+		const used = new Set(this.layoutOf(name).map((l) => l.field));
+		return this.columns(name).filter((c) => c.name === keep || !used.has(c.name));
+	}
+
+	private async _saveLayout(name: string, layout: CardItem[]): Promise<void> {
+		await this._updateObject(name, { layout: layout.slice(0, MAX_CARD_FIELDS) });
+	}
+
+	/** "+ field": a column as a line, or ("due:<column>") a date column as the object's due date row. */
+	async addLayoutField(name: string, event: Event): Promise<void> {
+		const select = event.target as HTMLSelectElement;
+		const value = select.value;
+		select.value = '';
+		const due = value.startsWith('due:');
+		const field = due ? value.slice(4) : value;
+		if (field) {
+			await this._saveLayout(name, [...this.layoutOf(name), { field, icon: due ? 'calendar-icon' : '', style: due ? 'due' : 'line' }]);
 		}
-		await this._updateObject(name, { fields: fields.filter(Boolean) });
+	}
+
+	hasDueRow(name: string): boolean {
+		return this.layoutOf(name).some((l) => l.style === 'due');
+	}
+
+	freeDateColumns(name: string): ColumnOption[] {
+		return this.freeColumns(name).filter((c) => c.date);
+	}
+
+	async setLayoutField(name: string, index: number, event: Event): Promise<void> {
+		const field = (event.target as HTMLSelectElement).value;
+		await this._saveLayout(name, this.layoutOf(name).map((l, i) => (i !== index ? l
+			: { ...l, field, style: l.style === 'due' && !this.isDateColumn(name, field) ? 'tag' as const : l.style })));
+	}
+
+	/** One due row per object: choosing Due on a row turns the previous due row into a tag. */
+	async setLayoutStyle(name: string, index: number, style: CardItemStyle): Promise<void> {
+		await this._saveLayout(name, this.layoutOf(name).map((l, i) => (i === index ? { ...l, style }
+			: style === 'due' && l.style === 'due' ? { ...l, style: 'tag' as const } : l)));
+	}
+
+	isDateColumn(name: string, field: string): boolean {
+		return this.columns(name).some((c) => c.name === field && c.date);
+	}
+
+	/** The other object that already has the board's one total field ('' = none, or this object has it). */
+	totalOwner(name: string): string {
+		return this.entities().find((n) => n !== name && !!this.settingsOf(n).sumField) ?? '';
+	}
+
+	async moveLayout(name: string, index: number, delta: number): Promise<void> {
+		const list = [...this.layoutOf(name)];
+		const target = index + delta;
+		if (target < 0 || target >= list.length) {
+			return;
+		}
+		[list[index], list[target]] = [list[target], list[index]];
+		this.iconPicker.set(null);
+		await this._saveLayout(name, list);
+	}
+
+	async removeLayout(name: string, index: number): Promise<void> {
+		this.iconPicker.set(null);
+		await this._saveLayout(name, this.layoutOf(name).filter((_, i) => i !== index));
+	}
+
+	toggleIconPicker(key: string): void {
+		this.iconPicker.set(this.iconPicker() === key ? null : key);
+		this.iconSearch.set('');
+		this._render();
+	}
+
+	onIconSearch(event: Event): void {
+		this.iconSearch.set((event.target as HTMLInputElement).value.trim().toLowerCase());
+		this._render();
+	}
+
+	filteredIcons(): readonly string[] {
+		const q = this.iconSearch();
+		return q ? this.iconNames.filter((n) => n.includes(q)) : this.iconNames;
+	}
+
+	/** Sets the icon of a layout row; '' removes it. */
+	async pickIcon(name: string, index: number, icon: string): Promise<void> {
+		this.iconPicker.set(null);
+		await this._saveLayout(name, this.layoutOf(name).map((l, i) => (i === index ? { ...l, icon } : l)));
+	}
+
+
+	iconMask(icon: string | undefined): string | null {
+		const url = iconUrl(icon, location.pathname);
+		return url ? `url("${url}")` : null;
+	}
+
+	iconLabel(icon: string): string {
+		return icon.replace(/-(button-)?icon$/, '').replace(/-/g, ' ');
 	}
 
 	async onSumField(name: string, event: Event): Promise<void> {
 		await this._updateObject(name, { sumField: (event.target as HTMLSelectElement).value });
+	}
+
+	async onTotalMode(event: Event): Promise<void> {
+		const value = normalizeTotalMode((event.target as HTMLSelectElement).value);
+		this.totalMode.set(value);
+		await this._node.setPropertyValue('totalMode', { constant: value });
+	}
+
+	/** The object's "due soon" days; boards saved before this was per object use the board-wide value. */
+	dueSoonOf(name: string): number {
+		return this.settingsOf(name).dueSoonDays ?? this.dueSoonDays();
+	}
+
+	/** 1-365 days; anything else is put back to the current value. */
+	async onDueSoonDays(name: string, event: Event): Promise<void> {
+		const input = event.target as HTMLInputElement;
+		const n = Number(input.value);
+		if (!input.value.trim() || !Number.isInteger(n) || n < 1 || n > 365) {
+			input.value = String(this.dueSoonOf(name));
+			return;
+		}
+		await this._updateObject(name, { dueSoonDays: n });
+	}
+
+	async onLocked(name: string, event: Event): Promise<void> {
+		await this._updateObject(name, { locked: !(event.target as HTMLInputElement).checked });
+	}
+
+	/** One stage per value of the object's field that no stage has yet, in the lookup's own order. */
+	async createStages(name: string): Promise<void> {
+		const options = this.statusOptions()[name];
+		if (!Array.isArray(options)) {
+			return;
+		}
+		const result = stagesFromValues(this.stages(), name, options);
+		const field = this.columnCaption(name, this.settingsOf(name).statusColumn);
+		this.createMessage.set({ ...this.createMessage(), [name]: !result.added
+			? `Every ${field} value already has a stage.`
+			: `Added ${result.added} stage(s)` + (result.skipped ? `; ${result.skipped} value(s) left out (${MAX_STAGES} stages at most).` : '.') });
+		if (result.added) {
+			await this._saveStages(result.stages);
+		}
+		this._render();
+	}
+
+	// ---- copy settings -------------------------------------------------------------------------------------
+
+	async showExport(): Promise<void> {
+		const settings: Record<string, unknown> = {};
+		for (const key of COPY_KEYS) {
+			const value = await this._constant(key);
+			if (value !== undefined) {
+				settings[key] = value;
+			}
+		}
+		this.copyText.set(JSON.stringify(settings, null, 2));
+		this.copyMessage.set('');
+		this.copyMode.set('export');
+		this._render();
+	}
+
+	showImport(): void {
+		this.copyText.set('');
+		this.copyMessage.set('');
+		this.copyMode.set('import');
+		this._render();
+	}
+
+	closeCopy(): void {
+		this.copyMode.set('');
+		this._render();
+	}
+
+	async copyToClipboard(): Promise<void> {
+		try {
+			await navigator.clipboard.writeText(this.copyText());
+			this.copyMessage.set('Copied.');
+		} catch {
+			this.copyMessage.set('Select the text and copy it (Ctrl+C).');
+		}
+		this._render();
+	}
+
+	onCopyText(event: Event): void {
+		this.copyText.set((event.target as HTMLTextAreaElement).value);
+	}
+
+	/**
+	 * Applies pasted settings: every known property is cleaned by the same rules the board uses; unknown keys and
+	 * invalid values are dropped. This board keeps its own code, so its cards stay its own.
+	 */
+	async applyImport(): Promise<void> {
+		let raw: unknown;
+		try {
+			raw = JSON.parse(this.copyText());
+		} catch {
+			this.copyMessage.set('This is not valid settings text.');
+			this._render();
+			return;
+		}
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+			this.copyMessage.set('This is not valid settings text.');
+			this._render();
+			return;
+		}
+		const v = raw as Record<string, unknown>;
+		const entities = normalizeEntities(v['entities'] ?? this.entities());
+		const clean: Partial<Record<(typeof COPY_KEYS)[number], unknown>> = {
+			stages: v['stages'] === undefined ? undefined : normalizeStages(v['stages']),
+			entities: v['entities'] === undefined ? undefined : entities,
+			objectSettings: v['objectSettings'] === undefined ? undefined : normalizeObjectSettings(v['objectSettings'], entities),
+			filters: v['filters'] === undefined ? undefined : normalizeFilterToggles(v['filters']),
+			swimlanes: v['swimlanes'] === undefined ? undefined : normalizeSwimlanes(v['swimlanes']),
+			refreshSeconds: v['refreshSeconds'] === undefined ? undefined : normalizeRefresh(v['refreshSeconds']),
+			totalMode: v['totalMode'] === undefined ? undefined : normalizeTotalMode(v['totalMode']),
+			dueSoonDays: v['dueSoonDays'] === undefined ? undefined : normalizeDueSoonDays(v['dueSoonDays']),
+			boardTitle: typeof v['boardTitle'] === 'string' ? v['boardTitle'].slice(0, 200) : undefined,
+			height: typeof v['height'] === 'string' && CSS_LENGTH.test(v['height']) ? v['height'] : undefined,
+		};
+		const keys = COPY_KEYS.filter((k) => clean[k] !== undefined);
+		if (!keys.length) {
+			this.copyMessage.set('Nothing to import: no known settings in this text.');
+			this._render();
+			return;
+		}
+		for (const key of keys) {
+			await this._node.setPropertyValue(key, { constant: clean[key] as never });
+		}
+		await this._load();
+		this.columnsOf.set({});
+		this.entities().forEach((name) => void this._loadColumns(name));
+		this.copyMessage.set(`Imported: ${keys.join(', ')}.`);
+		this._render();
 	}
 
 	lookupColumns(name: string): ColumnOption[] {
@@ -499,14 +754,21 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 		}
 		try {
 			const model = await Model.create(column.reference);
-			const display = (await model.getSchema()).primaryDisplayAttributeName || 'Name';
+			const schema = await model.getSchema();
+			const display = schema.primaryDisplayAttributeName || 'Name';
+			const has = (n: string) => (schema.attributes ?? []).find((a) => a.name === n);
+			const color = has('Color') ? 'Color' : '';
+			// The lookup's own order (e.g. a stage number) when it has one: "Create stages" follows it.
+			const order = ORDER_COLUMNS.find((n) => VALUE_TYPES.numeric.has(Number(has(n)?.dataValueType))) ?? '';
 			const rows = await model.load({
-				attributes: ['Id', display],
+				attributes: ['Id', display, ...(color ? [color] : []), ...(order ? [order] : [])],
 				options: { pagingConfig: { rowCount: LOOKUP_LIMIT, rowsOffset: 0 } },
 			} as never) as unknown as Array<Record<string, unknown>>;
 			const list = rows.slice(0, LOOKUP_LIMIT)
-				.map((r) => ({ id: String(r['Id']).toLowerCase(), caption: String(r[display] ?? r['Id']) }))
-				.sort((a, b) => a.caption.localeCompare(b.caption));
+				.map((r) => ({ id: String(r['Id']).toLowerCase(), caption: String(r[display] ?? r['Id']),
+					color: color && typeof r[color] === 'string' ? r[color] as string : undefined, order: Number(r[order] ?? 0) }))
+				.sort((a, b) => (order ? a.order - b.order : 0) || a.caption.localeCompare(b.caption))
+				.map(({ order: _, ...option }) => option);
 			this.statusOptions.set({ ...this.statusOptions(), [name]: list });
 			const values = new Set(this.stages().flatMap((s) => s.statusValues?.[name] ?? []));
 			values.forEach((v) => void this._loadCount(name, v));
@@ -565,7 +827,10 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 	}
 
 	private async _updateObject(name: string, change: Partial<ObjectSettings>): Promise<void> {
-		const next = { ...this.objectSettings(), [name]: { ...this.settingsOf(name), ...change } };
+		// The layout is the truth here: dueField/dueIcon are derived from its due row, and passing them back would make
+		// the normalizer read them as an old board's separate due date and restore a row the user just changed.
+		const { dueField: _f, dueIcon: _i, ...current } = this.settingsOf(name);
+		const next = { ...this.objectSettings(), [name]: { ...current, ...change } };
 		await this._saveObjectSettings(normalizeObjectSettings(next, this.entities()));
 	}
 
@@ -588,6 +853,7 @@ export class HpKanbanBoardPanelComponent implements PropertyPanel {
 					caption: typeof a.caption === 'string' && a.caption ? a.caption : a.name,
 					numeric: VALUE_TYPES.numeric.has(Number(a.dataValueType)),
 					reference: Number(a.dataValueType) === VALUE_TYPES.lookup && a.referenceSchemaName ? a.referenceSchemaName : '',
+					date: Number(a.dataValueType) === VALUE_TYPES.date || Number(a.dataValueType) === VALUE_TYPES.dateTime,
 				}))
 				.sort((a, b) => a.caption.localeCompare(b.caption));
 			this.columnsOf.set({ ...this.columnsOf(), [name]: list });
